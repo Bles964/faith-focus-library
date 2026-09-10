@@ -36,7 +36,6 @@ export default function UploadPage() {
       return;
     }
 
-    // Store the file under a per-user folder inside the "library-pdfs" bucket.
     const filePath = `${user.id}/${Date.now()}-${file.name}`;
     const { error: uploadError } = await supabase.storage
       .from("library-pdfs")
@@ -48,7 +47,6 @@ export default function UploadPage() {
       return;
     }
 
-    // Now record it in the catalog (the "documents" table).
     const { error: dbError } = await supabase.from("documents").insert({
       title: title || file.name.replace(/\.pdf$/i, ""),
       category,
@@ -145,4 +143,3 @@ export default function UploadPage() {
     </div>
   );
 }
-m
