@@ -22,12 +22,17 @@ export default function LibraryPage() {
   const [signedIn, setSignedIn] = useState(false);
 
   useEffect(() => {
-    async function load() {
+        async function load() {
       const {
         data: { user },
-      } = await 
-        
+      } = await supabase.auth.getUser();
+
       setSignedIn(!!user);
+
+  
+
+        
+      
 
       const { data, error } = await supabase
         .from("documents")
