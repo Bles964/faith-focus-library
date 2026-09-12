@@ -1,4 +1,5 @@
-"use client";
+""use client";
+
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabaseClient";
 
@@ -61,6 +62,9 @@ export default function LibraryPage() {
   }
 
   async function listenToDoc(doc: Doc) {
+    const primer = new SpeechSynthesisUtterance("");
+    speechSynthesis.speak(primer);
+
     if (speakingId === doc.id) {
       speechSynthesis.cancel();
       setSpeakingId(null);
