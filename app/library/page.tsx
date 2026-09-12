@@ -1,8 +1,4 @@
-"use "use client";
-
-
-
-
+"use client";
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabaseClient";
