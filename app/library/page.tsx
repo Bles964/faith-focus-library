@@ -1,5 +1,4 @@
 "use client";
-
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabaseClient";
 
@@ -20,19 +19,15 @@ export default function LibraryPage() {
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | "All">("All");
   const [signedIn, setSignedIn] = useState(false);
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
 
   useEffect(() => {
-        async function load() {
+    async function load() {
       const {
         data: { user },
       } = await supabase.auth.getUser();
 
       setSignedIn(!!user);
-
-  
-
-        
-      
 
       const { data, error } = await supabase
         .from("documents")
@@ -63,6 +58,31 @@ export default function LibraryPage() {
       .createSignedUrl(doc.file_path, 60 * 5); // link valid 5 minutes
     if (data?.signedUrl) window.open(data.signedUrl, "_blank");
     else alert(error?.message ?? "Could not open this file.");
+  }
+
+  async function listenToDoc(doc: Doc) {
+    if (speakingId === doc.id) {
+      speechSynthesis.cancel();
+      setSpeakingId(null);
+      return;
+    }
+
+    const { data, error } = await supabase.storage
+      .from("library-pdfs")
+      .createSignedUrl(doc.file_path, 60 * 5);
+
+    if (!data?.signedUrl) {
+      alert(error?.message ?? "Could not load this file.");
+      return;
+    }
+
+    setSpeakingId(doc.id);
+    const { extractPdfText } = await import("@/lib/pdfText");
+    const text = await extractPdfText(data.signedUrl);
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => setSpeakingId(null);
+    speechSynthesis.speak(utterance);
   }
 
   async function renameDoc(doc: Doc) {
@@ -175,6 +195,12 @@ export default function LibraryPage() {
 
               <div className="flex gap-3 mt-3 pt-3 border-t border-navy/10">
                 <button
+                  onClick={() => listenToDoc(doc)}
+                  className="text-xs text-navy/60 hover:text-gold underline"
+                >
+                  {speakingId === doc.id ? "Stop" : "Listen"}
+                </button>
+                <button
                   onClick={() => renameDoc(doc)}
                   className="text-xs text-navy/60 hover:text-gold underline"
                 >
@@ -194,5 +220,3 @@ export default function LibraryPage() {
     </div>
   );
 }
-
-  
