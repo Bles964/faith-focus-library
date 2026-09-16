@@ -13,6 +13,8 @@ type Doc = {
   created_at: string;
 };
 
+const CACHE_NAME = "library-pdfs-v1";
+
 export default function LibraryPage() {
   const supabase = createClient();
   const [docs, setDocs] = useState<Doc[]>([]);
@@ -20,6 +22,9 @@ export default function LibraryPage() {
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | "All">("All");
   const [signedIn, setSignedIn] = useState(false);
+  const [offlineIds, setOfflineIds] = useState<Set<string>>(new Set());
+  const [downloadingAll, setDownloadingAll] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -27,7 +32,6 @@ export default function LibraryPage() {
       const {
         data: { user },
       } = await supabase.auth.getUser();
-
       setSignedIn(!!user);
 
       const { data, error } = await supabase
@@ -37,6 +41,20 @@ export default function LibraryPage() {
 
       if (!error && data) setDocs(data as Doc[]);
       setLoading(false);
+
+      if (typeof window !== "undefined" && "caches" in window) {
+        const cache = await caches.open(CACHE_NAME);
+        const keys = await cache.keys();
+        const cachedPaths = new Set(
+          keys.map((req) => decodeURIComponent(new URL(req.url).pathname))
+        );
+        if (data) {
+          const matched = (data as Doc[])
+            .filter((d) => cachedPaths.has(`/${d.file_path}`))
+            .map((d) => d.id);
+          setOfflineIds(new Set(matched));
+        }
+      }
     }
     load();
   }, []);
@@ -53,12 +71,27 @@ export default function LibraryPage() {
     return matchesCategory && matchesSearch;
   });
 
+  async function getCachedBlobUrl(doc: Doc): Promise<string | null> {
+    if (!("caches" in window)) return null;
+    const cache = await caches.open(CACHE_NAME);
+    const match = await cache.match(`/${doc.file_path}`);
+    if (!match) return null;
+    const blob = await match.blob();
+    return URL.createObjectURL(blob);
+  }
+
   async function openDoc(doc: Doc) {
+    const cachedUrl = await getCachedBlobUrl(doc);
+    if (cachedUrl) {
+      window.open(cachedUrl, "_blank");
+      return;
+    }
+
     const { data, error } = await supabase.storage
       .from("library-pdfs")
-      .createSignedUrl(doc.file_path, 60 * 5); // link valid 5 minutes
+      .createSignedUrl(doc.file_path, 60 * 5);
     if (data?.signedUrl) window.open(data.signedUrl, "_blank");
-    else alert(error?.message ?? "Could not open this file.");
+    else alert(error?.message ?? "Could not open this file. You may be offline and this document hasn't been downloaded yet.");
   }
 
   async function listenToDoc(doc: Doc) {
@@ -71,22 +104,73 @@ export default function LibraryPage() {
       return;
     }
 
-    const { data, error } = await supabase.storage
-      .from("library-pdfs")
-      .createSignedUrl(doc.file_path, 60 * 5);
+    let pdfUrl = await getCachedBlobUrl(doc);
 
-    if (!data?.signedUrl) {
-      alert(error?.message ?? "Could not load this file.");
-      return;
+    if (!pdfUrl) {
+      const { data, error } = await supabase.storage
+        .from("library-pdfs")
+        .createSignedUrl(doc.file_path, 60 * 5);
+
+      if (!data?.signedUrl) {
+        alert(error?.message ?? "Could not load this file. You may be offline and this document hasn't been downloaded yet.");
+        return;
+      }
+      pdfUrl = data.signedUrl;
     }
 
     setSpeakingId(doc.id);
     const { extractPdfText } = await import("@/lib/pdfText");
-    const text = await extractPdfText(data.signedUrl);
+    const text = await extractPdfText(pdfUrl);
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.onend = () => setSpeakingId(null);
     speechSynthesis.speak(utterance);
+  }
+
+  async function downloadForOffline(doc: Doc) {
+    if (!("caches" in window)) {
+      alert("Offline storage isn't supported in this browser.");
+      return;
+    }
+    setDownloadingId(doc.id);
+    try {
+      const { data, error } = await supabase.storage
+        .from("library-pdfs")
+        .createSignedUrl(doc.file_path, 60 * 5);
+      if (!data?.signedUrl) {
+        alert(error?.message ?? "Could not fetch this file.");
+        return;
+      }
+      const res = await fetch(data.signedUrl);
+      const blob = await res.blob();
+      const cache = await caches.open(CACHE_NAME);
+      await cache.put(`/${doc.file_path}`, new Response(blob));
+      setOfflineIds((prev) => new Set(prev).add(doc.id));
+    } catch (e) {
+      alert("Download failed. Check your connection and try again.");
+    } finally {
+      setDownloadingId(null);
+    }
+  }
+
+  async function removeOffline(doc: Doc) {
+    if (!("caches" in window)) return;
+    const cache = await caches.open(CACHE_NAME);
+    await cache.delete(`/${doc.file_path}`);
+    setOfflineIds((prev) => {
+      const next = new Set(prev);
+      next.delete(doc.id);
+      return next;
+    });
+  }
+
+  async function downloadAll() {
+    setDownloadingAll(true);
+    for (const doc of docs) {
+      if (offlineIds.has(doc.id)) continue;
+      await downloadForOffline(doc);
+    }
+    setDownloadingAll(false);
   }
 
   async function renameDoc(doc: Doc) {
@@ -131,6 +215,7 @@ export default function LibraryPage() {
       return;
     }
 
+    await removeOffline(doc);
     setDocs((prev) => prev.filter((d) => d.id !== doc.id));
   }
 
@@ -145,7 +230,16 @@ export default function LibraryPage() {
 
   return (
     <div>
-      <h1 className="font-serif text-2xl text-navy mb-4">Browse</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="font-serif text-2xl text-navy">Browse</h1>
+        <button
+          onClick={downloadAll}
+          disabled={downloadingAll}
+          className="text-xs px-3 py-1.5 rounded border border-navy/30 text-navy/70 hover:border-gold disabled:opacity-50"
+        >
+          {downloadingAll ? "Downloading…" : "Download All for Offline"}
+        </button>
+      </div>
 
       <div className="flex flex-col sm:flex-row gap-3 mb-5">
         <input
@@ -181,44 +275,65 @@ export default function LibraryPage() {
         </p>
       ) : (
         <div className="grid sm:grid-cols-2 gap-4">
-          {filtered.map((doc) => (
-            <div
-              key={doc.id}
-              className="text-left border border-navy/15 rounded-lg p-4 bg-white hover:border-gold transition-colors"
-            >
-              <button onClick={() => openDoc(doc)} className="text-left w-full">
-                <span className="text-xs uppercase tracking-wide text-gold font-medium">
-                  {doc.category}
-                  {doc.specialty ? ` · ${doc.specialty}` : ""}
-                </span>
-                <h2 className="font-serif text-lg text-navy mt-1">{doc.title}</h2>
-                {doc.description && (
-                  <p className="text-sm text-navy/60 mt-1">{doc.description}</p>
-                )}
-              </button>
+          {filtered.map((doc) => {
+            const isOffline = offlineIds.has(doc.id);
+            const isDownloading = downloadingId === doc.id;
+            return (
+              <div
+                key={doc.id}
+                className="text-left border border-navy/15 rounded-lg p-4 bg-white hover:border-gold transition-colors"
+              >
+                <button onClick={() => openDoc(doc)} className="text-left w-full">
+                  <span className="text-xs uppercase tracking-wide text-gold font-medium">
+                    {doc.category}
+                    {doc.specialty ? ` · ${doc.specialty}` : ""}
+                    {isOffline ? " · Available offline" : ""}
+                  </span>
+                  <h2 className="font-serif text-lg text-navy mt-1">{doc.title}</h2>
+                  {doc.description && (
+                    <p className="text-sm text-navy/60 mt-1">{doc.description}</p>
+                  )}
+                </button>
 
-              <div className="flex gap-3 mt-3 pt-3 border-t border-navy/10">
-                <button
-                  onClick={() => listenToDoc(doc)}
-                  className="text-xs text-navy/60 hover:text-gold underline"
-                >
-                  {speakingId === doc.id ? "Stop" : "Listen"}
-                </button>
-                <button
-                  onClick={() => renameDoc(doc)}
-                  className="text-xs text-navy/60 hover:text-gold underline"
-                >
-                  Rename
-                </button>
-                <button
-                  onClick={() => deleteDoc(doc)}
-                  className="text-xs text-red-600 hover:text-red-800 underline"
-                >
-                  Delete
-                </button>
+                <div className="flex flex-wrap gap-3 mt-3 pt-3 border-t border-navy/10">
+                  <button
+                    onClick={() => listenToDoc(doc)}
+                    className="text-xs text-navy/60 hover:text-gold underline"
+                  >
+                    {speakingId === doc.id ? "Stop" : "Listen"}
+                  </button>
+                  <button
+                    onClick={() => renameDoc(doc)}
+                    className="text-xs text-navy/60 hover:text-gold underline"
+                  >
+                    Rename
+                  </button>
+                  <button
+                    onClick={() => deleteDoc(doc)}
+                    className="text-xs text-red-600 hover:text-red-800 underline"
+                  >
+                    Delete
+                  </button>
+                  {isOffline ? (
+                    <button
+                      onClick={() => removeOffline(doc)}
+                      className="text-xs text-navy/60 hover:text-gold underline"
+                    >
+                      Remove offline copy
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => downloadForOffline(doc)}
+                      disabled={isDownloading}
+                      className="text-xs text-navy/60 hover:text-gold underline disabled:opacity-50"
+                    >
+                      {isDownloading ? "Downloading…" : "Download for offline"}
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
