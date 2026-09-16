@@ -22,6 +22,7 @@ export default function LibraryPage() {
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | "All">("All");
   const [signedIn, setSignedIn] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [offlineIds, setOfflineIds] = useState<Set<string>>(new Set());
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -33,6 +34,15 @@ export default function LibraryPage() {
         data: { user },
       } = await supabase.auth.getUser();
       setSignedIn(!!user);
+
+      if (user) {
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("is_admin")
+          .eq("id", user.id)
+          .single();
+        setIsAdmin(profile?.is_admin ?? false);
+      }
 
       const { data, error } = await supabase
         .from("documents")
@@ -302,18 +312,22 @@ export default function LibraryPage() {
                   >
                     {speakingId === doc.id ? "Stop" : "Listen"}
                   </button>
-                  <button
-                    onClick={() => renameDoc(doc)}
-                    className="text-xs text-navy/60 hover:text-gold underline"
-                  >
-                    Rename
-                  </button>
-                  <button
-                    onClick={() => deleteDoc(doc)}
-                    className="text-xs text-red-600 hover:text-red-800 underline"
-                  >
-                    Delete
-                  </button>
+                  {isAdmin && (
+                    <>
+                      <button
+                        onClick={() => renameDoc(doc)}
+                        className="text-xs text-navy/60 hover:text-gold underline"
+                      >
+                        Rename
+                      </button>
+                      <button
+                        onClick={() => deleteDoc(doc)}
+                        className="text-xs text-red-600 hover:text-red-800 underline"
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
                   {isOffline ? (
                     <button
                       onClick={() => removeOffline(doc)}
