@@ -108,6 +108,16 @@ export default function LibraryPage() {
     const primer = new SpeechSynthesisUtterance("");
     speechSynthesis.speak(primer);
 
+    await new Promise<void>((resolve) => {
+      const voices = speechSynthesis.getVoices();
+      if (voices.length > 0) {
+        resolve();
+      } else {
+        speechSynthesis.onvoiceschanged = () => resolve();
+        setTimeout(() => resolve(), 1000); // fallback in case the event never fires
+      }
+    });
+
     if (speakingId === doc.id) {
       speechSynthesis.cancel();
       setSpeakingId(null);
