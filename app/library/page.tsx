@@ -108,6 +108,16 @@ export default function LibraryPage() {
     const primer = new SpeechSynthesisUtterance("");
     speechSynthesis.speak(primer);
 
+    await new Promise<void>((resolve) => {
+      const voices = speechSynthesis.getVoices();
+      if (voices.length > 0) {
+        resolve();
+      } else {
+        speechSynthesis.onvoiceschanged = () => resolve();
+        setTimeout(() => resolve(), 1000);
+      }
+    });
+
     if (speakingId === doc.id) {
       speechSynthesis.cancel();
       setSpeakingId(null);
@@ -132,9 +142,33 @@ export default function LibraryPage() {
     const { extractPdfText } = await import("@/lib/pdfText");
     const text = await extractPdfText(pdfUrl);
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.onend = () => setSpeakingId(null);
-    speechSynthesis.speak(utterance);
+    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+    const chunks: string[] = [];
+    let current = "";
+    for (const sentence of sentences) {
+      if ((current + sentence).length > 200) {
+        if (current) chunks.push(current.trim());
+        current = sentence;
+      } else {
+        current += sentence;
+      }
+    }
+    if (current) chunks.push(current.trim());
+
+    let index = 0;
+    function speakNext() {
+      if (index >= chunks.length) {
+        setSpeakingId(null);
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(chunks[index]);
+      utterance.onend = () => {
+        index++;
+        speakNext();
+      };
+      speechSynthesis.speak(utterance);
+    }
+    speakNext();
   }
 
   async function downloadForOffline(doc: Doc) {
