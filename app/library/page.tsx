@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabaseClient";
 
 type Doc = {
@@ -27,6 +27,10 @@ export default function LibraryPage() {
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
+
+  // Playback state for the currently speaking document
+  const chunksRef = useRef<string[]>([]);
+  const chunkIndexRef = useRef(0);
 
   useEffect(() => {
     async function load() {
@@ -104,6 +108,29 @@ export default function LibraryPage() {
     else alert(error?.message ?? "Could not open this file. You may be offline and this document hasn't been downloaded yet.");
   }
 
+  function speakChunkAt(index: number) {
+    if (index >= chunksRef.current.length) {
+      setSpeakingId(null);
+      return;
+    }
+    chunkIndexRef.current = index;
+    const utterance = new SpeechSynthesisUtterance(chunksRef.current[index]);
+    utterance.onend = () => {
+      speakChunkAt(chunkIndexRef.current + 1);
+    };
+    speechSynthesis.speak(utterance);
+  }
+
+  function skipForward() {
+    speechSynthesis.cancel();
+    speakChunkAt(chunkIndexRef.current + 1);
+  }
+
+  function skipBack() {
+    speechSynthesis.cancel();
+    speakChunkAt(Math.max(0, chunkIndexRef.current - 1));
+  }
+
   async function listenToDoc(doc: Doc) {
     const primer = new SpeechSynthesisUtterance("");
     speechSynthesis.speak(primer);
@@ -155,20 +182,8 @@ export default function LibraryPage() {
     }
     if (current) chunks.push(current.trim());
 
-    let index = 0;
-    function speakNext() {
-      if (index >= chunks.length) {
-        setSpeakingId(null);
-        return;
-      }
-      const utterance = new SpeechSynthesisUtterance(chunks[index]);
-      utterance.onend = () => {
-        index++;
-        speakNext();
-      };
-      speechSynthesis.speak(utterance);
-    }
-    speakNext();
+    chunksRef.current = chunks;
+    speakChunkAt(0);
   }
 
   async function downloadForOffline(doc: Doc) {
@@ -322,6 +337,7 @@ export default function LibraryPage() {
           {filtered.map((doc) => {
             const isOffline = offlineIds.has(doc.id);
             const isDownloading = downloadingId === doc.id;
+            const isSpeaking = speakingId === doc.id;
             return (
               <div
                 key={doc.id}
@@ -339,13 +355,29 @@ export default function LibraryPage() {
                   )}
                 </button>
 
-                <div className="flex flex-wrap gap-3 mt-3 pt-3 border-t border-navy/10">
+                <div className="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-navy/10">
                   <button
                     onClick={() => listenToDoc(doc)}
                     className="text-xs text-navy/60 hover:text-gold underline"
                   >
-                    {speakingId === doc.id ? "Stop" : "Listen"}
+                    {isSpeaking ? "Stop" : "Listen"}
                   </button>
+                  {isSpeaking && (
+                    <>
+                      <button
+                        onClick={skipBack}
+                        className="text-xs text-navy/60 hover:text-gold underline"
+                      >
+                        ⏪ Back
+                      </button>
+                      <button
+                        onClick={skipForward}
+                        className="text-xs text-navy/60 hover:text-gold underline"
+                      >
+                        Forward ⏩
+                      </button>
+                    </>
+                  )}
                   {isAdmin && (
                     <>
                       <button
