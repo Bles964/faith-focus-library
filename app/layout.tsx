@@ -19,6 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <nav className="flex gap-5 text-sm">
               <Link href="/library" className="hover:text-gold">Browse</Link>
               <Link href="/upload" className="hover:text-gold">Upload</Link>
+              <Link href="/focus" className="hover:text-gold">Focus</Link>
               <Link href="/login" className="hover:text-gold">Account</Link>
             </nav>
           </div>
@@ -31,4 +32,3 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
-
