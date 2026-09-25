@@ -111,4 +111,15 @@ export function LockInProvider({ children }: { children: React.ReactNode }) {
   };
 
   const stopEarly = () => {
-    if (intervalRef.current) clearInterval(
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    localStorage.removeItem("lockin_end");
+    localStorage.removeItem("lockin_pledges");
+    setLocked(false);
+  };
+
+  return (
+    <LockInContext.Provider value={{ locked, remaining, pledges, start, stopEarly }}>
+      {children}
+    </LockInContext.Provider>
+  );
+}
