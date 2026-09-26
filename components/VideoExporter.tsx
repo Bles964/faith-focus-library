@@ -67,7 +67,10 @@ export default function VideoExporter() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text: stage.narration }),
         });
-        if (!res.ok) throw new Error("Narration failed for " + stage.label);
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`Narration failed for ${stage.label}: ${errText}`);
+        }
         const audioBlob = await res.blob();
         const duration = await getAudioDuration(audioBlob);
 
