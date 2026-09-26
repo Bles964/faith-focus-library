@@ -100,7 +100,7 @@ export default function VideoExporter() {
       await ffmpeg.exec(["-f", "concat", "-safe", "0", "-i", "list.txt", "-c", "copy", "output.mp4"]);
 
       const data = await ffmpeg.readFile("output.mp4");
-      const blob = new Blob([data], { type: "video/mp4" });
+      const blob = new Blob([data as unknown as ArrayBuffer], { type: "video/mp4" });
       setDownloadUrl(URL.createObjectURL(blob));
       setProgress(100);
       setStatus("Done");
