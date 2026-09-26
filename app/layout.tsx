@@ -23,6 +23,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <Link href="/library" className="hover:text-gold">Browse</Link>
                 <Link href="/upload" className="hover:text-gold">Upload</Link>
                 <Link href="/focus" className="hover:text-gold">Focus</Link>
+                <Link href="/videos" className="hover:text-gold">Videos</Link>
                 <Link href="/login" className="hover:text-gold">Account</Link>
               </nav>
             </div>
