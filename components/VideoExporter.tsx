@@ -44,6 +44,19 @@ export default function VideoExporter() {
     return decoded.duration;
   }
 
+  // Splits the single narration track's total length across stages, proportional
+  // to each stage's word count. This is an estimate — if the timing feels off
+  // once you watch the output, adjust the WORD_WEIGHT_OVERRIDE below (seconds
+  // per stage, in order) instead of relying on the word-count guess.
+  const WORD_WEIGHT_OVERRIDE: number[] | null = null; // e.g. [25, 17, 9, 10, 20]
+
+  function getStageDurations(totalDuration: number): number[] {
+    if (WORD_WEIGHT_OVERRIDE) return WORD_WEIGHT_OVERRIDE;
+    const wordCounts = oaStages.map((s) => s.narration.trim().split(/\s+/).length);
+    const totalWords = wordCounts.reduce((a, b) => a + b, 0);
+    return wordCounts.map((w) => (w / totalWords) * totalDuration);
+  }
+
   async function build() {
     setBusy(true);
     setDownloadUrl(null);
@@ -58,49 +71,49 @@ export default function VideoExporter() {
         wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
       });
 
+      setStatus("Reading narration audio...");
+      const audioRes = await fetch("/oa-narration.m4a");
+      if (!audioRes.ok) throw new Error("Could not load /oa-narration.m4a — check it's in the public folder");
+      const audioBlob = await audioRes.blob();
+      const totalDuration = await getAudioDuration(audioBlob);
+      const stageDurations = getStageDurations(totalDuration);
+
       const inputsList: string[] = [];
       for (let idx = 0; idx < oaStages.length; idx++) {
         const stage = oaStages[idx];
-        setStatus(`Narrating: ${stage.label}`);
-        const res = await fetch("/api/narrate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: stage.narration }),
-        });
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Narration failed for ${stage.label}: ${errText}`);
-        }
-        const audioBlob = await res.blob();
-        const duration = await getAudioDuration(audioBlob);
-
         setStatus(`Drawing: ${stage.label}`);
         const pngBlob = await stageToPngBlob(stage);
 
         const pngName = `frame${idx}.png`;
-        const mp3Name = `audio${idx}.mp3`;
         await ffmpeg.writeFile(pngName, await fetchFile(pngBlob));
-        await ffmpeg.writeFile(mp3Name, await fetchFile(audioBlob));
 
         await ffmpeg.exec([
           "-loop", "1",
           "-i", pngName,
-          "-i", mp3Name,
-          "-c:v", "libx264",
-          "-t", String(duration + 0.4),
+          "-t", String(stageDurations[idx].toFixed(2)),
           "-pix_fmt", "yuv420p",
-          "-c:a", "aac",
-          "-shortest",
           `clip${idx}.mp4`,
         ]);
         inputsList.push(`clip${idx}.mp4`);
-        setProgress(Math.round(((idx + 1) / oaStages.length) * 90));
+        setProgress(Math.round(((idx + 1) / oaStages.length) * 70));
       }
 
       setStatus("Combining scenes...");
       const listContent = inputsList.map((f) => `file '${f}'`).join("\n");
       await ffmpeg.writeFile("list.txt", listContent);
-      await ffmpeg.exec(["-f", "concat", "-safe", "0", "-i", "list.txt", "-c", "copy", "output.mp4"]);
+      await ffmpeg.exec(["-f", "concat", "-safe", "0", "-i", "list.txt", "-c", "copy", "silent.mp4"]);
+      setProgress(85);
+
+      setStatus("Adding narration...");
+      await ffmpeg.writeFile("narration.m4a", await fetchFile(audioBlob));
+      await ffmpeg.exec([
+        "-i", "silent.mp4",
+        "-i", "narration.m4a",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-shortest",
+        "output.mp4",
+      ]);
 
       const data = await ffmpeg.readFile("output.mp4");
       const blob = new Blob([data as unknown as ArrayBuffer], { type: "video/mp4" });
