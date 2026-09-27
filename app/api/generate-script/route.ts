@@ -6,9 +6,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing text" }, { status: 400 });
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return NextResponse.json({ error: "Server missing OPENAI_API_KEY" }, { status: 500 });
+    return NextResponse.json({ error: "Server missing GEMINI_API_KEY" }, { status: 500 });
   }
 
   const prompt = `You are helping a medical student turn her clinical study notes into a short narrated teaching video script, in the style of a whiteboard animation.
@@ -31,18 +31,22 @@ Source text:
 ${text}
 """`;
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
-    }),
-  });
+  const res = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-goog-api-key": apiKey,
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: "application/json",
+        },
+      }),
+    }
+  );
 
   if (!res.ok) {
     const err = await res.text();
@@ -50,7 +54,7 @@ ${text}
   }
 
   const data = await res.json();
-  const rawText = data.choices?.[0]?.message?.content ?? "";
+  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
   let parsed;
   try {
