@@ -15,7 +15,7 @@ export default function ScriptGenerator() {
     setStages(null);
     try {
       setStatus("Reading PDF...");
-      const text = await extractPdfText(pdfUrl);
+      const text = await extractPdfText(pdfUrl.trim());
       if (!text.trim()) throw new Error("Couldn't find any text in that PDF");
 
       setStatus("Writing script...");
