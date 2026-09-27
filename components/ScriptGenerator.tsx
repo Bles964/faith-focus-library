@@ -15,16 +15,33 @@ export default function ScriptGenerator() {
     setStages(null);
     try {
       setStatus("Reading PDF...");
-      const text = await extractPdfText(pdfUrl.trim());
+      let text = "";
+      try {
+        text = await extractPdfText(pdfUrl.trim());
+      } catch (e: any) {
+        throw new Error("PDF read step failed: " + e.message);
+      }
       if (!text.trim()) throw new Error("Couldn't find any text in that PDF");
 
       setStatus("Writing script...");
-      const res = await fetch("/api/generate-script", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      const data = await res.json();
+      let res: Response;
+      try {
+        res = await fetch("/api/generate-script", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+      } catch (e: any) {
+        throw new Error("Network call to generate-script failed: " + e.message);
+      }
+      let data: any;
+      try {
+        data = await res.json();
+      } catch (e: any) {
+        throw new Error(
+          `Server didn't return JSON (status ${res.status}): ` + e.message
+        );
+      }
       if (!res.ok) throw new Error(data.error || "Script generation failed");
 
       setStages(data.stages);
