@@ -151,13 +151,21 @@ export default function VideoExporter() {
         </p>
       )}
       {downloadUrl && (
-        <a
-          href={downloadUrl}
-          download="osteoarthritis.mp4"
-          style={{ display: "inline-block", marginTop: 14, color: "#D4AF37", textDecoration: "underline" }}
-        >
-          Download MP4
-        </a>
+        <>
+          <video
+            src={downloadUrl}
+            controls
+            playsInline
+            style={{ width: "100%", marginTop: 16, borderRadius: 8, background: "#000" }}
+          />
+          <a
+            href={downloadUrl}
+            download="osteoarthritis.mp4"
+            style={{ display: "inline-block", marginTop: 14, color: "#D4AF37", textDecoration: "underline" }}
+          >
+            Download MP4
+          </a>
+        </>
       )}
     </div>
   );
