@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { extractPdfText } from "@/lib/extractPdfText";
+import { extractPdfText } from "@/lib/pdfText";
 
 type GeneratedStage = { label: string; narration: string };
 
