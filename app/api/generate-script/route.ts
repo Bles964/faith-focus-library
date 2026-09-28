@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   const { text } = await req.json();
   if (!text || typeof text !== "string") {
@@ -41,29 +43,50 @@ Source text:
 ${text}
 """`;
 
-  const res = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-goog-api-key": apiKey,
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-        },
-      }),
-    }
-  );
+  const MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
-  if (!res.ok) {
-    const err = await res.text();
-    return NextResponse.json({ error: err }, { status: 500 });
+  async function callGemini(model: string) {
+    const r = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-goog-api-key": apiKey as string,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: "application/json" },
+        }),
+      }
+    );
+    return r;
   }
 
-  const data = await res.json();
+  let data: any = null;
+  let lastError = "";
+  outer: for (const model of MODELS) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await callGemini(model);
+      if (r.ok) {
+        data = await r.json();
+        break outer;
+      }
+      lastError = await r.text();
+      // Model name not available: skip straight to the next model
+      if (r.status === 404 || r.status === 400) break;
+      // Busy or rate limited: wait a moment, then try again
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+
+  if (!data) {
+    return NextResponse.json(
+      { error: "Google's free AI is busy right now. Wait a minute and try again. " + lastError },
+      { status: 503 }
+    );
+  }
+
   const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
   let parsed;
