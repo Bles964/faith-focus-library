@@ -43,7 +43,7 @@ Source text:
 ${text}
 """`;
 
-  const MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+  const MODELS = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"];
 
   async function callGemini(model: string) {
     const r = await fetch(
@@ -64,7 +64,7 @@ ${text}
   }
 
   let data: any = null;
-  let lastError = "";
+  const attempts: string[] = [];
   outer: for (const model of MODELS) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const r = await callGemini(model);
@@ -72,7 +72,8 @@ ${text}
         data = await r.json();
         break outer;
       }
-      lastError = await r.text();
+      await r.text();
+      attempts.push(`${model}: ${r.status}`);
       // Model name not available: skip straight to the next model
       if (r.status === 404 || r.status === 400) break;
       // Busy or rate limited: wait a moment, then try again
@@ -82,7 +83,7 @@ ${text}
 
   if (!data) {
     return NextResponse.json(
-      { error: "Google's free AI is busy right now. Wait a minute and try again. " + lastError },
+      { error: "Google's free AI is busy right now. Wait a minute and try again. (" + attempts.join(", ") + ")" },
       { status: 503 }
     );
   }
