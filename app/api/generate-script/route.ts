@@ -2,8 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
 
+const MODELS = [
+  "gemini-flash-lite-latest",
+  "gemini-flash-latest",
+  "gemini-2.5-flash",
+];
+
+const TOTAL_BUDGET_MS = 55000;
+const PER_TRY_MS = 20000;
+
+function extractJson(raw: string) {
+  const cleaned = raw.replace(/```json|```/g, "").trim();
+  return JSON.parse(cleaned);
+}
+
 export async function POST(req: NextRequest) {
-  const { text } = await req.json();
+  const started = Date.now();
+
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
+  const text = body?.text;
   if (!text || typeof text !== "string") {
     return NextResponse.json({ error: "Missing text" }, { status: 400 });
   }
@@ -40,67 +62,74 @@ Return ONLY valid JSON: an object with a "stages" key containing an array of obj
 
 Source text:
 """
-${text}
+${text.slice(0, 14000)}
 """`;
 
-  const MODELS = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"];
+  const failures: string[] = [];
 
-  async function callGemini(model: string) {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-goog-api-key": apiKey as string,
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json" },
-        }),
-      }
-    );
-    return r;
-  }
+  for (const model of MODELS) {
+    const remaining = TOTAL_BUDGET_MS - (Date.now() - started);
+    if (remaining < 4000) {
+      failures.push(`${model}: skipped, out of time`);
+      break;
+    }
+    const timeout = Math.min(PER_TRY_MS, remaining - 1000);
 
-  let data: any = null;
-  const attempts: string[] = [];
-  outer: for (const model of MODELS) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const r = await callGemini(model);
-      if (r.ok) {
-        data = await r.json();
-        break outer;
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-goog-api-key": apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              maxOutputTokens: 4096,
+            },
+          }),
+          signal: AbortSignal.timeout(timeout),
+        }
+      );
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        failures.push(`${model}: HTTP ${res.status} ${errText.slice(0, 120)}`);
+        continue;
       }
-      await r.text();
-      attempts.push(`${model}: ${r.status}`);
-      // Model name not available: skip straight to the next model
-      if (r.status === 404 || r.status === 400) break;
-      // Busy or rate limited: wait a moment, then try again
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+
+      const data = await res.json();
+      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+
+      let parsed: any;
+      try {
+        parsed = extractJson(rawText);
+      } catch {
+        failures.push(`${model}: returned invalid JSON`);
+        continue;
+      }
+
+      const stages = Array.isArray(parsed)
+        ? parsed
+        : parsed?.stages ?? Object.values(parsed ?? {})[0];
+
+      if (!Array.isArray(stages) || stages.length === 0) {
+        failures.push(`${model}: no stages in response`);
+        continue;
+      }
+
+      return NextResponse.json({ stages });
+    } catch (e: any) {
+      const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";
+      failures.push(`${model}: ${timedOut ? "timed out" : e?.message || "network error"}`);
     }
   }
 
-  if (!data) {
-    return NextResponse.json(
-      { error: "Google's free AI is busy right now. Wait a minute and try again. (" + attempts.join(", ") + ")" },
-      { status: 503 }
-    );
-  }
-
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-
-  let parsed;
-  try {
-    parsed = JSON.parse(rawText);
-  } catch {
-    return NextResponse.json(
-      { error: "Model didn't return valid JSON", raw: rawText },
-      { status: 500 }
-    );
-  }
-
-  const stages = Array.isArray(parsed) ? parsed : parsed.stages ?? Object.values(parsed)[0];
-
-  return NextResponse.json({ stages });
+  return NextResponse.json(
+    { error: "All models failed. " + failures.join(" | ") },
+    { status: 503 }
+  );
 }
