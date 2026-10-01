@@ -2,6 +2,7 @@ import VideoExporter from "@/components/VideoExporter";
 import AutoVideoMaker from "@/components/AutoVideoMaker";
 import SexualDysfunctionVideo from "@/components/SexualDysfunctionVideo";
 import FractureVideo from "@/components/FractureVideo";
+import PelvisVideo from "@/components/PelvisVideo";
 
 export default function VideosPage() {
   return (
@@ -9,6 +10,8 @@ export default function VideosPage() {
       <AutoVideoMaker />
       <hr style={{ margin: "40px 0", border: "none", borderTop: "1px solid #2A3E5C" }} />
       <FractureVideo />
+      <hr style={{ margin: "40px 0", border: "none", borderTop: "1px solid #2A3E5C" }} />
+      <PelvisVideo />
       <hr style={{ margin: "40px 0", border: "none", borderTop: "1px solid #2A3E5C" }} />
       <SexualDysfunctionVideo />
       <hr style={{ margin: "40px 0", border: "none", borderTop: "1px solid #2A3E5C" }} />
