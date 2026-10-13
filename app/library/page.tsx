@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabaseClient";
 
 type Doc = {
@@ -17,6 +18,7 @@ const CACHE_NAME = "library-pdfs-v1";
 
 export default function LibraryPage() {
   const supabase = createClient();
+  const router = useRouter();
   const [docs, setDocs] = useState<Doc[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -31,6 +33,23 @@ export default function LibraryPage() {
   // Playback state for the currently speaking document
   const chunksRef = useRef<string[]>([]);
   const chunkIndexRef = useRef(0);
+
+  // Remember the search box and category when you leave and come back
+  useEffect(() => {
+    try {
+      const s = sessionStorage.getItem("library-search");
+      if (s) setSearch(s);
+      const c = sessionStorage.getItem("library-category");
+      if (c) setActiveCategory(c);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("library-search", search);
+      sessionStorage.setItem("library-category", activeCategory);
+    } catch {}
+  }, [search, activeCategory]);
 
   useEffect(() => {
     async function load() {
@@ -94,22 +113,8 @@ export default function LibraryPage() {
     return URL.createObjectURL(blob);
   }
 
-  async function openDoc(doc: Doc) {
-    if (!isAdmin) {
-      window.location.href = `/read?doc=${doc.id}`;
-      return;
-    }
-    const cachedUrl = await getCachedBlobUrl(doc);
-    if (cachedUrl) {
-      window.open(cachedUrl, "_blank");
-      return;
-    }
-
-    const { data, error } = await supabase.storage
-      .from("library-pdfs")
-      .createSignedUrl(doc.file_path, 60 * 5);
-    if (data?.signedUrl) window.open(data.signedUrl, "_blank");
-    else alert(error?.message ?? "Could not open this file. You may be offline and this document hasn't been downloaded yet.");
+  function openDoc(doc: Doc) {
+    router.push(`/read?doc=${doc.id}`);
   }
 
   function speakChunkAt(index: number) {
