@@ -1,10 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabaseClient";
+
+type DocLite = { id: string; title: string };
 
 export default function ReadPage() {
   const supabase = createClient();
+  const router = useRouter();
+  const [docs, setDocs] = useState<DocLite[]>([]);
+  const [currentId, setCurrentId] = useState("");
+  const [filePath, setFilePath] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState("Opening…");
   const [error, setError] = useState("");
@@ -17,57 +25,92 @@ export default function ReadPage() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<any>(null);
   const touchRef = useRef<{ x: number; y: number } | null>(null);
+  const loadTokenRef = useRef(0);
 
-  // Load the document
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const id = new URLSearchParams(window.location.search).get("doc");
-        if (!id) throw new Error("No document selected");
+  async function loadDocument(id: string) {
+    const token = ++loadTokenRef.current;
+    setError("");
+    setStatus("Opening…");
+    setNumPages(0);
+    setPage(1);
+    setZoom(1);
+    pdfRef.current = null;
 
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          window.location.href = "/login";
-          return;
-        }
+    try {
+      const { data: doc, error: docErr } = await supabase
+        .from("documents")
+        .select("title,file_path")
+        .eq("id", id)
+        .single();
+      if (docErr || !doc) throw new Error("Document not found");
+      if (token !== loadTokenRef.current) return;
+      setTitle(doc.title);
+      setFilePath(doc.file_path);
+      setCurrentId(id);
 
-        const { data: doc, error: docErr } = await supabase
-          .from("documents")
-          .select("title,file_path")
-          .eq("id", id)
-          .single();
-        if (docErr || !doc) throw new Error("Document not found");
-        setTitle(doc.title);
+      const { data: signed, error: urlErr } = await supabase.storage
+        .from("library-pdfs")
+        .createSignedUrl(doc.file_path, 60);
+      if (!signed?.signedUrl) throw new Error(urlErr?.message ?? "Could not open this document");
 
-        const { data: signed, error: urlErr } = await supabase.storage
-          .from("library-pdfs")
-          .createSignedUrl(doc.file_path, 60);
-        if (!signed?.signedUrl) throw new Error(urlErr?.message ?? "Could not open this document");
+      setStatus("Loading pages…");
+      const res = await fetch(signed.signedUrl);
+      if (!res.ok) throw new Error("Could not load this document");
+      const buf = await res.arrayBuffer();
+      if (token !== loadTokenRef.current) return;
 
-        setStatus("Loading pages…");
-        const res = await fetch(signed.signedUrl);
-        if (!res.ok) throw new Error("Could not load this document");
-        const buf = await res.arrayBuffer();
+      const pdfjsLib: any = await import("pdfjs-dist");
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+      if (token !== loadTokenRef.current) return;
 
-        const pdfjsLib: any = await import("pdfjs-dist");
-        pdfjsLib.GlobalWorkerOptions.workerSrc =
-          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-        const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
-        if (cancelled) return;
-
-        pdfRef.current = pdf;
-        setNumPages(pdf.numPages);
+      pdfRef.current = pdf;
+      setNumPages(pdf.numPages);
+      setStatus("");
+    } catch (e: any) {
+      if (token === loadTokenRef.current) {
         setStatus("");
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || "Something went wrong");
+        setError(e?.message || "Something went wrong");
       }
     }
-    load();
+  }
+
+  // First load: check sign-in, get the list of documents, open the chosen one
+  useEffect(() => {
+    async function init() {
+      const id = new URLSearchParams(window.location.search).get("doc");
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("is_admin")
+        .eq("id", user.id)
+        .single();
+      setIsAdmin(profile?.is_admin === true);
+
+      const { data: list } = await supabase
+        .from("documents")
+        .select("id,title")
+        .order("title", { ascending: true });
+      if (list) setDocs(list as DocLite[]);
+
+      if (!id) {
+        setStatus("");
+        setError("No document selected. Pick one from the list above.");
+        return;
+      }
+      loadDocument(id);
+    }
+    init();
     return () => {
-      cancelled = true;
+      loadTokenRef.current++;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -121,6 +164,40 @@ export default function ReadPage() {
     window.scrollTo({ top: 0 });
   }
 
+  function goBack() {
+    if (typeof window !== "undefined" && window.history.length > 1) router.back();
+    else router.push("/library");
+  }
+
+  function switchDoc(id: string) {
+    if (!id || id === currentId) return;
+    window.history.replaceState(null, "", `/read?doc=${id}`);
+    window.scrollTo({ top: 0 });
+    loadDocument(id);
+  }
+
+  async function openOriginal() {
+    if (!filePath) return;
+    try {
+      if ("caches" in window) {
+        const cache = await caches.open("library-pdfs-v1");
+        const match = await cache.match(`/${filePath}`);
+        if (match) {
+          const blob = await match.blob();
+          window.open(URL.createObjectURL(blob), "_blank");
+          return;
+        }
+      }
+      const { data, error: urlErr } = await supabase.storage
+        .from("library-pdfs")
+        .createSignedUrl(filePath, 60 * 5);
+      if (data?.signedUrl) window.open(data.signedUrl, "_blank");
+      else alert(urlErr?.message ?? "Could not open the original file");
+    } catch {
+      alert("Could not open the original file");
+    }
+  }
+
   function onTouchStart(e: React.TouchEvent) {
     const t = e.touches[0];
     touchRef.current = { x: t.clientX, y: t.clientY };
@@ -149,10 +226,35 @@ export default function ReadPage() {
     >
       <style>{`@media print { .reader-root { display: none !important; } }`}</style>
 
-      <a href="/library" className="text-sm text-gold underline">
-        ← Back to library
-      </a>
-      <h1 className="font-serif text-xl text-navy mt-2 mb-3">{title}</h1>
+      <div className="flex items-center justify-between mb-3">
+        <button onClick={goBack} className="text-sm text-gold underline">
+          ← Back
+        </button>
+        {isAdmin && filePath && (
+          <button onClick={openOriginal} className="text-xs text-navy/60 hover:text-gold underline">
+            Open original PDF
+          </button>
+        )}
+      </div>
+
+      {docs.length > 0 && (
+        <select
+          value={currentId}
+          onChange={(e) => switchDoc(e.target.value)}
+          className="w-full border border-navy/20 rounded px-3 py-2 mb-3 text-sm text-navy bg-white"
+        >
+          <option value="" disabled>
+            Choose a document…
+          </option>
+          {docs.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.title}
+            </option>
+          ))}
+        </select>
+      )}
+
+      {title && <h1 className="font-serif text-xl text-navy mb-3">{title}</h1>}
 
       {error && (
         <p className="text-sm text-red-600 border border-red-200 rounded p-3 mb-3">{error}</p>
@@ -182,10 +284,18 @@ export default function ReadPage() {
           <button className={btn} onClick={() => goTo(page + 1)} disabled={page >= numPages}>
             Next
           </button>
-          <button className={btn} onClick={() => setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)))} disabled={zoom <= 1}>
+          <button
+            className={btn}
+            onClick={() => setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)))}
+            disabled={zoom <= 1}
+          >
             −
           </button>
-          <button className={btn} onClick={() => setZoom((z) => Math.min(3, +(z + 0.5).toFixed(1)))} disabled={zoom >= 3}>
+          <button
+            className={btn}
+            onClick={() => setZoom((z) => Math.min(3, +(z + 0.5).toFixed(1)))}
+            disabled={zoom >= 3}
+          >
             +
           </button>
         </div>
