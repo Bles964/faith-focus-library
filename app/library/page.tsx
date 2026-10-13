@@ -95,6 +95,10 @@ export default function LibraryPage() {
   }
 
   async function openDoc(doc: Doc) {
+    if (!isAdmin) {
+      window.location.href = `/read?doc=${doc.id}`;
+      return;
+    }
     const cachedUrl = await getCachedBlobUrl(doc);
     if (cachedUrl) {
       window.open(cachedUrl, "_blank");
@@ -291,13 +295,15 @@ export default function LibraryPage() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <h1 className="font-serif text-2xl text-navy">Browse</h1>
-        <button
-          onClick={downloadAll}
-          disabled={downloadingAll}
-          className="text-xs px-3 py-1.5 rounded border border-navy/30 text-navy/70 hover:border-gold disabled:opacity-50"
-        >
-          {downloadingAll ? "Downloading…" : "Download All for Offline"}
-        </button>
+        {isAdmin && (
+          <button
+            onClick={downloadAll}
+            disabled={downloadingAll}
+            className="text-xs px-3 py-1.5 rounded border border-navy/30 text-navy/70 hover:border-gold disabled:opacity-50"
+          >
+            {downloadingAll ? "Downloading…" : "Download All for Offline"}
+          </button>
+        )}
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3 mb-5">
@@ -347,7 +353,7 @@ export default function LibraryPage() {
                   <span className="text-xs uppercase tracking-wide text-gold font-medium">
                     {doc.category}
                     {doc.specialty ? ` · ${doc.specialty}` : ""}
-                    {isOffline ? " · Available offline" : ""}
+                    {isAdmin && isOffline ? " · Available offline" : ""}
                   </span>
                   <h2 className="font-serif text-lg text-navy mt-1">{doc.title}</h2>
                   {doc.description && (
@@ -392,23 +398,23 @@ export default function LibraryPage() {
                       >
                         Delete
                       </button>
+                      {isOffline ? (
+                        <button
+                          onClick={() => removeOffline(doc)}
+                          className="text-xs text-navy/60 hover:text-gold underline"
+                        >
+                          Remove offline copy
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => downloadForOffline(doc)}
+                          disabled={isDownloading}
+                          className="text-xs text-navy/60 hover:text-gold underline disabled:opacity-50"
+                        >
+                          {isDownloading ? "Downloading…" : "Download for offline"}
+                        </button>
+                      )}
                     </>
-                  )}
-                  {isOffline ? (
-                    <button
-                      onClick={() => removeOffline(doc)}
-                      className="text-xs text-navy/60 hover:text-gold underline"
-                    >
-                      Remove offline copy
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => downloadForOffline(doc)}
-                      disabled={isDownloading}
-                      className="text-xs text-navy/60 hover:text-gold underline disabled:opacity-50"
-                    >
-                      {isDownloading ? "Downloading…" : "Download for offline"}
-                    </button>
                   )}
                 </div>
               </div>
