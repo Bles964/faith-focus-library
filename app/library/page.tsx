@@ -1,9 +1,7 @@
 "use client";
-
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabaseClient";
-
 type Doc = {
   id: string;
   title: string;
@@ -13,13 +11,9 @@ type Doc = {
   file_path: string;
   created_at: string;
 };
-
 const CACHE_NAME = "library-pdfs-v1";
-
-// A tiny silent sound, used to unlock audio on phones when you tap Listen
 const SILENT_WAV =
   "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
-
 export default function LibraryPage() {
   const supabase = createClient();
   const router = useRouter();
@@ -33,86 +27,88 @@ export default function LibraryPage() {
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
-
-  // Playback state for the currently speaking document
+  const [audioLoading, setAudioLoading] = useState(false);
   const chunksRef = useRef<string[]>([]);
   const chunkIndexRef = useRef(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const prefetchRef = useRef<Map<number, Promise<string>>>(new Map());
   const activeRef = useRef(false);
   const tokenRef = useRef(0);
-  const [audioLoading, setAudioLoading] = useState(false);
-
-  // Remember the search box and category when you leave and come back
+  // Remember the search box and category when leaving and returning.
   useEffect(() => {
     try {
-      const s = sessionStorage.getItem("library-search");
-      if (s) setSearch(s);
-      const c = sessionStorage.getItem("library-category");
-      if (c) setActiveCategory(c);
+      const savedSearch = sessionStorage.getItem("library-search");
+      if (savedSearch) setSearch(savedSearch);
+      const savedCategory = sessionStorage.getItem("library-category");
+      if (savedCategory) setActiveCategory(savedCategory);
     } catch {}
   }, []);
-
   useEffect(() => {
     try {
       sessionStorage.setItem("library-search", search);
       sessionStorage.setItem("library-category", activeCategory);
     } catch {}
   }, [search, activeCategory]);
-
+  // Load documents and account permissions.
   useEffect(() => {
     async function load() {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      setSignedIn(!!user);
-
-      if (user) {
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("is_admin")
-          .eq("id", user.id)
-          .single();
-        setIsAdmin(profile?.is_admin ?? false);
-      }
-
-      const { data, error } = await supabase
-        .from("documents")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (!error && data) setDocs(data as Doc[]);
-      setLoading(false);
-
-      if (typeof window !== "undefined" && "caches" in window) {
-        const cache = await caches.open(CACHE_NAME);
-        const keys = await cache.keys();
-        const cachedPaths = new Set(
-          keys.map((req) => decodeURIComponent(new URL(req.url).pathname))
-        );
-        if (data) {
-          const matched = (data as Doc[])
-            .filter((d) => cachedPaths.has(`/${d.file_path}`))
-            .map((d) => d.id);
-          setOfflineIds(new Set(matched));
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        setSignedIn(!!user);
+        if (user) {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("is_admin")
+            .eq("id", user.id)
+            .single();
+          setIsAdmin(profile?.is_admin ?? false);
         }
+        const { data, error } = await supabase
+          .from("documents")
+          .select("*")
+          .order("created_at", { ascending: false });
+        if (!error && data) {
+          setDocs(data as Doc[]);
+        }
+        if (typeof window !== "undefined" && "caches" in window) {
+          const cache = await caches.open(CACHE_NAME);
+          const keys = await cache.keys();
+          const cachedPaths = new Set(
+            keys.map((request) =>
+              decodeURIComponent(new URL(request.url).pathname)
+            )
+          );
+          if (data) {
+            const matched = (data as Doc[])
+              .filter((doc) => cachedPaths.has(`/${doc.file_path}`))
+              .map((doc) => doc.id);
+            setOfflineIds(new Set(matched));
+          }
+        }
+      } catch (error) {
+        console.error("Could not load library:", error);
+      } finally {
+        setLoading(false);
       }
     }
     load();
   }, []);
-
-  const categories = ["All", ...Array.from(new Set(docs.map((d) => d.category)))];
-
-  const filtered = docs.filter((d) => {
-    const matchesCategory = activeCategory === "All" || d.category === activeCategory;
-    const q = search.trim().toLowerCase();
+  const categories = [
+    "All",
+    ...Array.from(new Set(docs.map((doc) => doc.category))),
+  ];
+  const filtered = docs.filter((doc) => {
+    const matchesCategory =
+      activeCategory === "All" || doc.category === activeCategory;
+    const query = search.trim().toLowerCase();
     const matchesSearch =
-      !q ||
-      d.title.toLowerCase().includes(q) ||
-      (d.specialty ?? "").toLowerCase().includes(q);
+      !query ||
+      doc.title.toLowerCase().includes(query) ||
+      (doc.specialty ?? "").toLowerCase().includes(query);
     return matchesCategory && matchesSearch;
   });
-
   async function getCachedBlobUrl(doc: Doc): Promise<string | null> {
     if (!("caches" in window)) return null;
     const cache = await caches.open(CACHE_NAME);
@@ -121,172 +117,234 @@ export default function LibraryPage() {
     const blob = await match.blob();
     return URL.createObjectURL(blob);
   }
-
   function openDoc(doc: Doc) {
     router.push(`/read?doc=${doc.id}`);
   }
-
   function getAudio(): HTMLAudioElement {
     if (!audioRef.current) {
-      const a = new Audio();
-      a.preload = "auto";
-      audioRef.current = a;
+      const audio = new Audio();
+      audio.preload = "auto";
+      audioRef.current = audio;
     }
     return audioRef.current;
   }
-
+  // Request audio and verify that the server actually returned audio.
   async function fetchChunkAudio(text: string): Promise<string> {
-    let lastErr = "audio failed";
+    let lastError = "Audio generation failed.";
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const res = await fetch("/api/narrate-free", {
+        const response = await fetch("/api/narrate-free", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify({ text }),
         });
-        if (res.ok) {
-          const blob = await res.blob();
-          return URL.createObjectURL(blob);
+        if (!response.ok) {
+          const responseText = await response.text();
+          try {
+            const errorData = JSON.parse(responseText);
+            lastError =
+              errorData.error || `Audio server error (${response.status}).`;
+          } catch {
+            lastError = `Audio server error (${response.status}).`;
+          }
+          throw new Error(lastError);
         }
-        let msg = "";
-        try {
-          msg = (await res.json()).error;
-        } catch {}
-        lastErr = msg || `status ${res.status}`;
-      } catch (e: any) {
-        lastErr = e?.message || "network error";
+        const contentType = (
+          response.headers.get("content-type") || ""
+        ).toLowerCase();
+        if (!contentType.startsWith("audio/")) {
+          const responseText = await response.text();
+          throw new Error(
+            `The server returned ${contentType || "an unknown response"} instead of audio. ` +
+              responseText.slice(0, 150)
+          );
+        }
+        const blob = await response.blob();
+        if (blob.size === 0) {
+          throw new Error("The voice server returned an empty audio file.");
+        }
+        return URL.createObjectURL(blob);
+      } catch (error: unknown) {
+        lastError =
+          error instanceof Error
+            ? error.message
+            : "Could not generate audio.";
+        console.error(
+          `Audio request attempt ${attempt} failed:`,
+          lastError
+        );
+        if (attempt < 3) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * attempt)
+          );
+        }
       }
-      await new Promise((r) => setTimeout(r, 1000 * attempt));
     }
-    throw new Error(lastErr);
+    throw new Error(lastError);
   }
-
   function prefetch(index: number) {
-    if (index >= chunksRef.current.length) return;
+    if (index < 0 || index >= chunksRef.current.length) return;
     if (prefetchRef.current.has(index)) return;
-    const p = fetchChunkAudio(chunksRef.current[index]);
-    p.catch(() => {});
-    prefetchRef.current.set(index, p);
+    const promise = fetchChunkAudio(chunksRef.current[index]);
+    promise.catch(() => {});
+    prefetchRef.current.set(index, promise);
   }
-
   function clearPrefetch() {
-    prefetchRef.current.forEach((p) => {
-      p.then((u) => URL.revokeObjectURL(u)).catch(() => {});
+    prefetchRef.current.forEach((promise) => {
+      promise.then((url) => URL.revokeObjectURL(url)).catch(() => {});
     });
     prefetchRef.current.clear();
   }
-
   function finishPlayback() {
     activeRef.current = false;
     setSpeakingId(null);
     setAudioLoading(false);
     clearPrefetch();
   }
-
   function stopPlayback() {
     tokenRef.current++;
     activeRef.current = false;
-    const a = audioRef.current;
-    if (a) {
-      a.onended = null;
-      a.onerror = null;
-      a.onplaying = null;
-      a.pause();
+    const audio = audioRef.current;
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.onplaying = null;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
     }
     clearPrefetch();
     setSpeakingId(null);
     setAudioLoading(false);
   }
-
   async function playChunk(index: number, token: number) {
     if (token !== tokenRef.current) return;
     if (index >= chunksRef.current.length) {
       finishPlayback();
       return;
     }
+    if (index < 0) index = 0;
     chunkIndexRef.current = index;
+    setAudioLoading(true);
     prefetch(index);
-
     let url: string;
     try {
-      url = await (prefetchRef.current.get(index) as Promise<string>);
-    } catch {
+      const promise = prefetchRef.current.get(index);
+      if (!promise) {
+        throw new Error("The audio request could not be started.");
+      }
+      url = await promise;
+    } catch (error: unknown) {
       prefetchRef.current.delete(index);
       if (token !== tokenRef.current) return;
-      playChunk(index + 1, token); // skip a piece that could not be made
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not generate audio for this section.";
+      console.error("Could not prepare audio:", message);
+      stopPlayback();
+      alert(`Could not prepare the audio.\n\n${message}`);
       return;
     }
-    if (token !== tokenRef.current) return;
-
+    if (token !== tokenRef.current) {
+      URL.revokeObjectURL(url);
+      return;
+    }
     prefetch(index + 1);
     prefetch(index + 2);
-
     const audio = getAudio();
     audio.onended = () => {
       URL.revokeObjectURL(url);
       prefetchRef.current.delete(index);
-      playChunk(index + 1, token);
+      if (token === tokenRef.current) {
+        playChunk(index + 1, token);
+      }
     };
     audio.onerror = () => {
-      playChunk(index + 1, token);
+      if (token !== tokenRef.current) return;
+      URL.revokeObjectURL(url);
+      prefetchRef.current.delete(index);
+      console.error("The browser could not play the generated audio.");
+      stopPlayback();
+      alert(
+        "The browser could not play the generated audio. " +
+          "The voice server may have returned an unsupported or damaged audio file."
+      );
     };
-    audio.onplaying = () => setAudioLoading(false);
+    audio.onplaying = () => {
+      if (token === tokenRef.current) {
+        setAudioLoading(false);
+      }
+    };
     audio.src = url;
     try {
       await audio.play();
-    } catch (e: any) {
-      if (e?.name === "NotAllowedError" && token === tokenRef.current) {
-        stopPlayback();
-        alert("Tap Listen again to start the audio.");
+    } catch (error: unknown) {
+      if (token !== tokenRef.current) return;
+      const name =
+        error instanceof Error ? error.name : "";
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Audio playback failed.";
+      console.error("Audio playback error:", error);
+      stopPlayback();
+      if (name === "NotAllowedError") {
+        alert("Tap Listen again to allow the audio to start.");
+      } else {
+        alert(`Audio playback failed.\n\n${message}`);
       }
     }
   }
-
   function skipForward() {
     const token = ++tokenRef.current;
     audioRef.current?.pause();
     playChunk(chunkIndexRef.current + 1, token);
   }
-
   function skipBack() {
     const token = ++tokenRef.current;
     audioRef.current?.pause();
     playChunk(Math.max(0, chunkIndexRef.current - 1), token);
   }
-
   function setMediaSession(title: string) {
     try {
-      const ms: any = (navigator as any).mediaSession;
-      if (!ms) return;
-      ms.metadata = new (window as any).MediaMetadata({
+      const mediaSession = (navigator as any).mediaSession;
+      if (!mediaSession) return;
+      mediaSession.metadata = new (window as any).MediaMetadata({
         title,
         artist: "Faith and Focus Library",
       });
-      ms.setActionHandler("nexttrack", skipForward);
-      ms.setActionHandler("previoustrack", skipBack);
-      ms.setActionHandler("pause", () => audioRef.current?.pause());
-      ms.setActionHandler("play", () => audioRef.current?.play());
-    } catch {}
+      mediaSession.setActionHandler("nexttrack", skipForward);
+      mediaSession.setActionHandler("previoustrack", skipBack);
+      mediaSession.setActionHandler("pause", () =>
+        audioRef.current?.pause()
+      );
+      mediaSession.setActionHandler("play", () =>
+        audioRef.current?.play()
+      );
+    } catch (error) {
+      console.warn("Media controls are unavailable:", error);
+    }
   }
-
   async function listenToDoc(doc: Doc) {
-    // Tapping Listen again on the same document stops it
+    // Tapping Listen on the same document stops playback.
     if (speakingId === doc.id) {
       stopPlayback();
       return;
     }
-
-    // Unlock audio on phones while the tap is still fresh
     const audio = getAudio();
     stopPlayback();
+    // Attempt to unlock audio on mobile browsers during the user's tap.
     audio.src = SILENT_WAV;
     audio.play().catch(() => {});
-
     setSpeakingId(doc.id);
     setAudioLoading(true);
-
+    let pdfUrl: string | null = null;
+    let isTemporaryBlobUrl = false;
     try {
-      let pdfUrl = await getCachedBlobUrl(doc);
+      pdfUrl = await getCachedBlobUrl(doc);
       if (!pdfUrl) {
         const { data, error } = await supabase.storage
           .from("library-pdfs")
@@ -294,30 +352,39 @@ export default function LibraryPage() {
         if (!data?.signedUrl) {
           throw new Error(
             error?.message ??
-              "Could not load this file. You may be offline and this document hasn't been downloaded yet."
+              "Could not load this file. Check your internet connection or download the document for offline use."
           );
         }
         pdfUrl = data.signedUrl;
+      } else {
+        isTemporaryBlobUrl = true;
       }
-
       const { extractPdfText } = await import("@/lib/pdfText");
       const text = await extractPdfText(pdfUrl);
-
-      // Cut the text into pieces of a few sentences each
+      if (!text || !text.trim()) {
+        throw new Error(
+          "No readable text was found in this PDF. It may be a scanned document that needs OCR."
+        );
+      }
+      // Divide extracted text into manageable pieces.
       const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
       const pieces: string[] = [];
       for (const sentence of sentences) {
         let rest = sentence.trim();
         while (rest.length > 380) {
           let cut = rest.lastIndexOf(", ", 380);
-          if (cut < 100) cut = rest.lastIndexOf(" ", 380);
-          if (cut < 100) cut = 380;
+          if (cut < 100) {
+            cut = rest.lastIndexOf(" ", 380);
+          }
+          if (cut < 100) {
+            cut = 380;
+          }
           pieces.push(rest.slice(0, cut + 1).trim());
           rest = rest.slice(cut + 1).trim();
         }
         if (rest) pieces.push(rest);
       }
-
+      // Combine short pieces without making requests too large.
       const chunks: string[] = [];
       let current = "";
       for (const piece of pieces) {
@@ -329,23 +396,32 @@ export default function LibraryPage() {
         }
       }
       if (current) chunks.push(current.trim());
-
-      if (chunks.length === 0) throw new Error("No readable text was found in this document.");
-
+      if (chunks.length === 0) {
+        throw new Error("No readable text was found in this document.");
+      }
       chunksRef.current = chunks;
+      chunkIndexRef.current = 0;
       const token = ++tokenRef.current;
       activeRef.current = true;
       setMediaSession(doc.title);
-      playChunk(0, token);
-    } catch (e: any) {
+      await playChunk(0, token);
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not start the audio.";
+      console.error("Listen feature failed:", error);
       stopPlayback();
-      alert(e?.message ?? "Could not start the audio.");
+      alert(`Could not start reading this document.\n\n${message}`);
+    } finally {
+      if (isTemporaryBlobUrl && pdfUrl) {
+        URL.revokeObjectURL(pdfUrl);
+      }
     }
   }
-
   async function downloadForOffline(doc: Doc) {
     if (!("caches" in window)) {
-      alert("Offline storage isn't supported in this browser.");
+      alert("Offline storage is not supported in this browser.");
       return;
     }
     setDownloadingId(doc.id);
@@ -357,136 +433,156 @@ export default function LibraryPage() {
         alert(error?.message ?? "Could not fetch this file.");
         return;
       }
-      const res = await fetch(data.signedUrl);
-      const blob = await res.blob();
+      const response = await fetch(data.signedUrl);
+      if (!response.ok) {
+        throw new Error("The PDF could not be downloaded.");
+      }
+      const blob = await response.blob();
       const cache = await caches.open(CACHE_NAME);
-      await cache.put(`/${doc.file_path}`, new Response(blob));
-      setOfflineIds((prev) => new Set(prev).add(doc.id));
-    } catch (e) {
+      await cache.put(
+        `/${doc.file_path}`,
+        new Response(blob)
+      );
+      setOfflineIds((previous) => new Set(previous).add(doc.id));
+    } catch (error) {
+      console.error("Offline download failed:", error);
       alert("Download failed. Check your connection and try again.");
     } finally {
       setDownloadingId(null);
     }
   }
-
   async function removeOffline(doc: Doc) {
     if (!("caches" in window)) return;
     const cache = await caches.open(CACHE_NAME);
     await cache.delete(`/${doc.file_path}`);
-    setOfflineIds((prev) => {
-      const next = new Set(prev);
+    setOfflineIds((previous) => {
+      const next = new Set(previous);
       next.delete(doc.id);
       return next;
     });
   }
-
   async function downloadAll() {
     setDownloadingAll(true);
-    for (const doc of docs) {
-      if (offlineIds.has(doc.id)) continue;
-      await downloadForOffline(doc);
+    try {
+      for (const doc of docs) {
+        if (offlineIds.has(doc.id)) continue;
+        await downloadForOffline(doc);
+      }
+    } finally {
+      setDownloadingAll(false);
     }
-    setDownloadingAll(false);
   }
-
   async function renameDoc(doc: Doc) {
     const newTitle = window.prompt("Rename document:", doc.title);
-    if (!newTitle || newTitle.trim() === "" || newTitle === doc.title) return;
-
+    if (
+      !newTitle ||
+      newTitle.trim() === "" ||
+      newTitle === doc.title
+    ) {
+      return;
+    }
     const { error } = await supabase
       .from("documents")
       .update({ title: newTitle.trim() })
       .eq("id", doc.id);
-
     if (error) {
       alert(error.message ?? "Could not rename this document.");
       return;
     }
-
-    setDocs((prev) =>
-      prev.map((d) => (d.id === doc.id ? { ...d, title: newTitle.trim() } : d))
+    setDocs((previous) =>
+      previous.map((item) =>
+        item.id === doc.id
+          ? { ...item, title: newTitle.trim() }
+          : item
+      )
     );
   }
-
   async function deleteDoc(doc: Doc) {
-    const confirmed = window.confirm(`Delete "${doc.title}"? This cannot be undone.`);
+    const confirmed = window.confirm(
+      `Delete "${doc.title}"? This cannot be undone.`
+    );
     if (!confirmed) return;
-
     const { error: storageError } = await supabase.storage
       .from("library-pdfs")
       .remove([doc.file_path]);
-
     if (storageError) {
       alert(storageError.message ?? "Could not delete the file.");
       return;
     }
-
-    const { error: dbError } = await supabase
+    const { error: databaseError } = await supabase
       .from("documents")
       .delete()
       .eq("id", doc.id);
-
-    if (dbError) {
-      alert(dbError.message ?? "Could not delete the document record.");
+    if (databaseError) {
+      alert(
+        databaseError.message ??
+          "Could not delete the document record."
+      );
       return;
     }
-
     await removeOffline(doc);
-    setDocs((prev) => prev.filter((d) => d.id !== doc.id));
+    setDocs((previous) =>
+      previous.filter((item) => item.id !== doc.id)
+    );
   }
-
   if (!signedIn && !loading) {
     return (
       <div className="text-center py-16">
-        <p className="text-navy/70 mb-3">Sign in to browse your library.</p>
-        <a href="/login" className="text-gold underline">Go to sign in</a>
+        <p className="text-navy/70 mb-3">
+          Sign in to browse your library.
+        </p>
+        <a href="/login" className="text-gold underline">
+          Go to sign in
+        </a>
       </div>
     );
   }
-
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="font-serif text-2xl text-navy">Browse</h1>
+        <h1 className="font-serif text-2xl text-navy">
+          Browse
+        </h1>
         {isAdmin && (
           <button
             onClick={downloadAll}
             disabled={downloadingAll}
             className="text-xs px-3 py-1.5 rounded border border-navy/30 text-navy/70 hover:border-gold disabled:opacity-50"
           >
-            {downloadingAll ? "Downloading…" : "Download All for Offline"}
+            {downloadingAll
+              ? "Downloading…"
+              : "Download All for Offline"}
           </button>
         )}
       </div>
-
       <div className="flex flex-col sm:flex-row gap-3 mb-5">
         <input
           type="text"
           placeholder="Search by title or specialty…"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(event) => setSearch(event.target.value)}
           className="flex-1 border border-navy/20 rounded px-3 py-2"
         />
       </div>
-
       <div className="flex flex-wrap gap-2 mb-6">
-        {categories.map((c) => (
+        {categories.map((category) => (
           <button
-            key={c}
-            onClick={() => setActiveCategory(c)}
+            key={category}
+            onClick={() => setActiveCategory(category)}
             className={`text-sm px-3 py-1 rounded-full border ${
-              activeCategory === c
+              activeCategory === category
                 ? "bg-navy text-paper border-navy"
                 : "border-navy/30 text-navy/70 hover:border-navy"
             }`}
           >
-            {c}
+            {category}
           </button>
         ))}
       </div>
-
       {loading ? (
-        <p className="text-navy/50 text-sm">Loading…</p>
+        <p className="text-navy/50 text-sm">
+          Loading…
+        </p>
       ) : filtered.length === 0 ? (
         <p className="text-navy/50 text-sm">
           Nothing here yet. Use "Upload" to add your first guide.
@@ -502,24 +598,38 @@ export default function LibraryPage() {
                 key={doc.id}
                 className="text-left border border-navy/15 rounded-lg p-4 bg-white hover:border-gold transition-colors"
               >
-                <button onClick={() => openDoc(doc)} className="text-left w-full">
+                <button
+                  onClick={() => openDoc(doc)}
+                  className="text-left w-full"
+                >
                   <span className="text-xs uppercase tracking-wide text-gold font-medium">
                     {doc.category}
-                    {doc.specialty ? ` · ${doc.specialty}` : ""}
-                    {isAdmin && isOffline ? " · Available offline" : ""}
+                    {doc.specialty
+                      ? ` · ${doc.specialty}`
+                      : ""}
+                    {isAdmin && isOffline
+                      ? " · Available offline"
+                      : ""}
                   </span>
-                  <h2 className="font-serif text-lg text-navy mt-1">{doc.title}</h2>
+                  <h2 className="font-serif text-lg text-navy mt-1">
+                    {doc.title}
+                  </h2>
                   {doc.description && (
-                    <p className="text-sm text-navy/60 mt-1">{doc.description}</p>
+                    <p className="text-sm text-navy/60 mt-1">
+                      {doc.description}
+                    </p>
                   )}
                 </button>
-
                 <div className="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-navy/10">
                   <button
                     onClick={() => listenToDoc(doc)}
                     className="text-xs text-navy/60 hover:text-gold underline"
                   >
-                    {isSpeaking ? (audioLoading ? "Preparing… (tap to cancel)" : "Stop") : "Listen"}
+                    {isSpeaking
+                      ? audioLoading
+                        ? "Preparing… (tap to cancel)"
+                        : "Stop"
+                      : "Listen"}
                   </button>
                   {isSpeaking && (
                     <>
@@ -564,7 +674,9 @@ export default function LibraryPage() {
                           disabled={isDownloading}
                           className="text-xs text-navy/60 hover:text-gold underline disabled:opacity-50"
                         >
-                          {isDownloading ? "Downloading…" : "Download for offline"}
+                          {isDownloading
+                            ? "Downloading…"
+                            : "Download for offline"}
                         </button>
                       )}
                     </>
