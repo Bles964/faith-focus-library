@@ -5,6 +5,7 @@ import FractureVideo from "@/components/FractureVideo";
 import PelvisVideo from "@/components/PelvisVideo";
 import EyeVideos from "@/components/EyeVideos";
 import GenExamVideos from "@/components/GenExamVideos";
+import CardiacVideos from "@/components/CardiacVideos";
 
 const rule = { margin: "40px 0", border: "none", borderTop: "1px solid #2A3E5C" } as const;
 
@@ -20,6 +21,8 @@ export default function VideosPage() {
       <EyeVideos />
       <hr style={rule} />
       <GenExamVideos />
+      <hr style={rule} />
+      <CardiacVideos />
       <hr style={rule} />
       <SexualDysfunctionVideo />
       <hr style={rule} />
