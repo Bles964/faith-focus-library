@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -13,6 +13,13 @@ type Props<T extends BaseStage> = {
   voice?: string;
 };
 
+const ENGINE_SERVERS = [
+  "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd",
+  "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd",
+];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export default function AutoVideoExporter<T extends BaseStage>({
   stages,
   StageComponent,
@@ -24,6 +31,10 @@ export default function AutoVideoExporter<T extends BaseStage>({
   const [progress, setProgress] = useState(0);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Kept between attempts, so a retry does not repeat finished work
+  const ffmpegRef = useRef<any>(null);
+  const audioCache = useRef<Map<string, Blob>>(new Map());
 
   async function stageToPngBlob(stage: T): Promise<Blob> {
     const container = document.createElement("div");
@@ -60,39 +71,93 @@ export default function AutoVideoExporter<T extends BaseStage>({
     return decoded.duration;
   }
 
+  async function getEngine() {
+    if (ffmpegRef.current) return ffmpegRef.current;
+
+    const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+    const { toBlobURL } = await import("@ffmpeg/util");
+
+    let lastErr = "";
+    for (let round = 1; round <= 2; round++) {
+      for (let s = 0; s < ENGINE_SERVERS.length; s++) {
+        const base = ENGINE_SERVERS[s];
+        try {
+          setStatus(
+            round === 1 && s === 0
+              ? "Loading video engine..."
+              : `Loading video engine... (server ${s + 1}, try ${round})`
+          );
+          const ff = new FFmpeg();
+          await ff.load({
+            coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
+            wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
+          });
+          ffmpegRef.current = ff;
+          return ff;
+        } catch (e: any) {
+          lastErr = e?.message || "download failed";
+          setStatus("Engine download dropped, trying again...");
+          await sleep(1500);
+        }
+      }
+    }
+    throw new Error(`Could not download the video engine (${lastErr}).`);
+  }
+
+  async function getNarration(stage: T): Promise<Blob> {
+    const key = `${voice ?? ""}|${stage.narration}`;
+    const cached = audioCache.current.get(key);
+    if (cached) return cached;
+
+    let lastErr = "";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        setStatus(
+          attempt === 1
+            ? `Narrating: ${stage.label}`
+            : `Narrating: ${stage.label} (try ${attempt} of 3)`
+        );
+        const signal =
+          typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+            ? (AbortSignal as any).timeout(70000)
+            : undefined;
+        const res = await fetch("/api/narrate-free", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: stage.narration, voice }),
+          signal,
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          audioCache.current.set(key, blob);
+          return blob;
+        }
+        let msg = "";
+        try {
+          msg = (await res.json()).error;
+        } catch {}
+        lastErr = msg || `status ${res.status}`;
+      } catch (e: any) {
+        lastErr = e?.message || "network error";
+      }
+      await sleep(2000 * attempt);
+    }
+    throw new Error(`Narration failed for ${stage.label}: ${lastErr}`);
+  }
+
   async function build() {
     setBusy(true);
     setVideoUrl(null);
     setProgress(0);
     try {
-      const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-      const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
-      const ffmpeg = new FFmpeg();
-      setStatus("Loading video engine...");
-      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
-      });
+      const ffmpeg = await getEngine();
+      const { fetchFile } = await import("@ffmpeg/util");
 
       const clips: string[] = [];
       for (let idx = 0; idx < stages.length; idx++) {
         const stage = stages[idx];
 
-        setStatus(`Narrating: ${stage.label}`);
-        const res = await fetch("/api/narrate-free", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: stage.narration, voice }),
-        });
-        if (!res.ok) {
-          let msg = "";
-          try {
-            msg = (await res.json()).error;
-          } catch {}
-          throw new Error(`Narration failed for ${stage.label}: ${msg || res.status}`);
-        }
-        const audioBlob = await res.blob();
+        const audioBlob = await getNarration(stage);
         const duration = await getAudioDuration(audioBlob);
 
         setStatus(`Drawing: ${stage.label}`);
@@ -128,7 +193,14 @@ export default function AutoVideoExporter<T extends BaseStage>({
       setProgress(100);
       setStatus("Done");
     } catch (e: any) {
-      setStatus("Error: " + e.message);
+      const msg: string = e?.message || "Something went wrong";
+      if (/load failed|failed to fetch|network/i.test(msg)) {
+        setStatus(
+          "Error: the connection dropped. Tap the button again. Parts already finished are kept, so it will be quicker."
+        );
+      } else {
+        setStatus("Error: " + msg + " Tap the button to try again.");
+      }
     } finally {
       setBusy(false);
     }
@@ -154,7 +226,7 @@ export default function AutoVideoExporter<T extends BaseStage>({
       </button>
       {status && (
         <p style={{ color: "#9AA6B8", fontSize: ".85rem", marginTop: 10 }}>
-          {status} {progress > 0 && `(${progress}%)`}
+          {status} {progress > 0 && progress < 100 && `(${progress}%)`}
         </p>
       )}
       {videoUrl && (
