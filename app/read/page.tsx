@@ -7,20 +7,16 @@ import { createClient } from "@/lib/supabaseClient";
 type DocLite = { id: string; title: string };
 type Chunk = { text: string; page: number };
 
-// A tiny silent sound, used to unlock audio on phones when you tap Listen
-const SILENT_WAV =
-  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
-
 // Cut one page of text into short pieces (a few sentences each)
 function chunkText(text: string): string[] {
   const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
   const pieces: string[] = [];
   for (const sentence of sentences) {
     let rest = sentence.trim();
-    while (rest.length > 380) {
-      let cut = rest.lastIndexOf(", ", 380);
-      if (cut < 100) cut = rest.lastIndexOf(" ", 380);
-      if (cut < 100) cut = 380;
+    while (rest.length > 180) {
+      let cut = rest.lastIndexOf(", ", 180);
+      if (cut < 60) cut = rest.lastIndexOf(" ", 180);
+      if (cut < 60) cut = 180;
       pieces.push(rest.slice(0, cut + 1).trim());
       rest = rest.slice(cut + 1).trim();
     }
@@ -29,7 +25,7 @@ function chunkText(text: string): string[] {
   const chunks: string[] = [];
   let current = "";
   for (const piece of pieces) {
-    if ((current + " " + piece).length > 450) {
+    if ((current + " " + piece).length > 200) {
       if (current) chunks.push(current.trim());
       current = piece;
     } else {
@@ -54,7 +50,6 @@ export default function ReadPage() {
   const [page, setPage] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [listening, setListening] = useState(false);
-  const [audioLoading, setAudioLoading] = useState(false);
 
   const pdfRef = useRef<any>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -65,13 +60,12 @@ export default function ReadPage() {
   const pageRef = useRef(1);
 
   // Listening
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const prefetchRef = useRef<Map<number, Promise<string>>>(new Map());
   const chunksRef = useRef<Chunk[]>([]);
   const chunkIndexRef = useRef(0);
   const tokenRef = useRef(0);
-  const usingFallbackRef = useRef(false);
+  const activeRef = useRef(false);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const wakeLockRef = useRef<any>(null);
 
   useEffect(() => {
     pageRef.current = page;
@@ -79,59 +73,18 @@ export default function ReadPage() {
 
   /* ---------------- Listening ---------------- */
 
-  function getAudio(): HTMLAudioElement {
-    if (!audioRef.current) {
-      const a = new Audio();
-      a.preload = "auto";
-      audioRef.current = a;
-    }
-    return audioRef.current;
+  async function acquireWakeLock() {
+    try {
+      const nav: any = navigator;
+      if (nav.wakeLock) wakeLockRef.current = await nav.wakeLock.request("screen");
+    } catch {}
   }
 
-  async function fetchChunkAudio(text: string): Promise<string> {
-    let lastErr = "audio failed";
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const signal =
-          typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
-            ? (AbortSignal as any).timeout(25000)
-            : undefined;
-        const res = await fetch("/api/narrate-free", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-          signal,
-        });
-        if (res.ok) {
-          const blob = await res.blob();
-          return URL.createObjectURL(blob);
-        }
-        let msg = "";
-        try {
-          msg = (await res.json()).error;
-        } catch {}
-        lastErr = msg || `status ${res.status}`;
-      } catch (e: any) {
-        lastErr = e?.message || "network error";
-      }
-      await new Promise((r) => setTimeout(r, 1000 * attempt));
-    }
-    throw new Error(lastErr);
-  }
-
-  function prefetch(index: number) {
-    if (index >= chunksRef.current.length) return;
-    if (prefetchRef.current.has(index)) return;
-    const p = fetchChunkAudio(chunksRef.current[index].text);
-    p.catch(() => {});
-    prefetchRef.current.set(index, p);
-  }
-
-  function clearPrefetch() {
-    prefetchRef.current.forEach((p) => {
-      p.then((u) => URL.revokeObjectURL(u)).catch(() => {});
-    });
-    prefetchRef.current.clear();
+  function releaseWakeLock() {
+    try {
+      wakeLockRef.current?.release();
+    } catch {}
+    wakeLockRef.current = null;
   }
 
   function followPage(index: number) {
@@ -144,142 +97,52 @@ export default function ReadPage() {
   }
 
   function finishListening() {
+    activeRef.current = false;
     setListening(false);
-    setAudioLoading(false);
-    clearPrefetch();
+    releaseWakeLock();
   }
 
   function stopListening() {
     tokenRef.current++;
-    const a = audioRef.current;
-    if (a) {
-      a.onended = null;
-      a.onerror = null;
-      a.onplaying = null;
-      a.pause();
-    }
-    clearPrefetch();
+    activeRef.current = false;
     try {
       speechSynthesis.cancel();
     } catch {}
     setListening(false);
-    setAudioLoading(false);
+    releaseWakeLock();
   }
 
-  function fallbackSpeak(token: number, index: number) {
-    if (token !== tokenRef.current) return;
+  function speakChunkAt(index: number) {
     if (index >= chunksRef.current.length) {
       finishListening();
       return;
     }
     chunkIndexRef.current = index;
     followPage(index);
-    const u = new SpeechSynthesisUtterance(chunksRef.current[index].text);
-    u.onend = () => fallbackSpeak(token, index + 1);
-    u.onerror = (e: any) => {
-      if (token !== tokenRef.current) return;
+    const myToken = ++tokenRef.current;
+    const utterance = new SpeechSynthesisUtterance(chunksRef.current[index].text);
+    utterance.onend = () => {
+      if (myToken !== tokenRef.current) return;
+      speakChunkAt(chunkIndexRef.current + 1);
+    };
+    utterance.onerror = (e: any) => {
+      if (myToken !== tokenRef.current) return;
       if (e?.error === "canceled" || e?.error === "interrupted") return;
-      fallbackSpeak(token, index + 1);
+      speakChunkAt(chunkIndexRef.current + 1);
     };
-    utteranceRef.current = u;
-    setAudioLoading(false);
-    speechSynthesis.speak(u);
-  }
-
-  async function playChunk(index: number, token: number) {
-    if (token !== tokenRef.current) return;
-    if (index >= chunksRef.current.length) {
-      finishListening();
-      return;
-    }
-    chunkIndexRef.current = index;
-    prefetch(index);
-
-    let url: string;
-    try {
-      url = await (prefetchRef.current.get(index) as Promise<string>);
-    } catch (e: any) {
-      prefetchRef.current.delete(index);
-      if (token !== tokenRef.current) return;
-      if (index === 0) {
-        usingFallbackRef.current = true;
-        alert(
-          "The natural voice is not available right now (" +
-            (e?.message || "error") +
-            "). Using your phone's voice instead."
-        );
-        fallbackSpeak(token, 0);
-        return;
-      }
-      playChunk(index + 1, token);
-      return;
-    }
-    if (token !== tokenRef.current) return;
-
-    prefetch(index + 1);
-    prefetch(index + 2);
-    followPage(index);
-
-    const audio = getAudio();
-    audio.onended = () => {
-      URL.revokeObjectURL(url);
-      prefetchRef.current.delete(index);
-      playChunk(index + 1, token);
-    };
-    audio.onerror = () => {
-      playChunk(index + 1, token);
-    };
-    audio.onplaying = () => setAudioLoading(false);
-    audio.src = url;
-    try {
-      await audio.play();
-    } catch (e: any) {
-      if (e?.name === "NotAllowedError" && token === tokenRef.current) {
-        stopListening();
-        alert("Tap Listen again to start the audio.");
-      }
-    }
+    // Keep a reference, otherwise the phone can drop the voice partway through
+    utteranceRef.current = utterance;
+    speechSynthesis.speak(utterance);
   }
 
   function skipForward() {
-    const token = ++tokenRef.current;
-    if (usingFallbackRef.current) {
-      try {
-        speechSynthesis.cancel();
-      } catch {}
-      fallbackSpeak(token, chunkIndexRef.current + 1);
-      return;
-    }
-    audioRef.current?.pause();
-    playChunk(chunkIndexRef.current + 1, token);
+    speechSynthesis.cancel();
+    speakChunkAt(chunkIndexRef.current + 1);
   }
 
   function skipBack() {
-    const token = ++tokenRef.current;
-    if (usingFallbackRef.current) {
-      try {
-        speechSynthesis.cancel();
-      } catch {}
-      fallbackSpeak(token, Math.max(0, chunkIndexRef.current - 1));
-      return;
-    }
-    audioRef.current?.pause();
-    playChunk(Math.max(0, chunkIndexRef.current - 1), token);
-  }
-
-  function setMediaSession() {
-    try {
-      const ms: any = (navigator as any).mediaSession;
-      if (!ms) return;
-      ms.metadata = new (window as any).MediaMetadata({
-        title: title || "Reading aloud",
-        artist: "Faith and Focus Library",
-      });
-      ms.setActionHandler("nexttrack", skipForward);
-      ms.setActionHandler("previoustrack", skipBack);
-      ms.setActionHandler("pause", () => audioRef.current?.pause());
-      ms.setActionHandler("play", () => audioRef.current?.play());
-    } catch {}
+    speechSynthesis.cancel();
+    speakChunkAt(Math.max(0, chunkIndexRef.current - 1));
   }
 
   async function toggleListen() {
@@ -290,15 +153,13 @@ export default function ReadPage() {
     const pdf = pdfRef.current;
     if (!pdf) return;
 
-    // Unlock audio on phones while the tap is still fresh
-    const audio = getAudio();
-    stopListening();
-    usingFallbackRef.current = false;
-    audio.src = SILENT_WAV;
-    audio.play().catch(() => {});
-
+    // Unlock the voice on phones while the tap is still fresh
+    speechSynthesis.cancel();
+    speechSynthesis.speak(new SpeechSynthesisUtterance(""));
+    activeRef.current = false;
+    tokenRef.current++;
+    chunksRef.current = [];
     setListening(true);
-    setAudioLoading(true);
 
     try {
       const startPage = pageRef.current;
@@ -317,14 +178,36 @@ export default function ReadPage() {
       if (chunks.length === 0) throw new Error("No readable text was found from this page onward.");
 
       chunksRef.current = chunks;
-      const token = ++tokenRef.current;
-      setMediaSession();
-      playChunk(0, token);
+      activeRef.current = true;
+      acquireWakeLock();
+      speakChunkAt(0);
     } catch (e: any) {
       stopListening();
       alert(e?.message ?? "Could not start the audio.");
     }
   }
+
+  // If the phone silently stops speaking partway through, start the same piece again
+  useEffect(() => {
+    if (!listening) return;
+    const t = setInterval(() => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+      if (!activeRef.current) return;
+      if (speechSynthesis.paused) {
+        speechSynthesis.resume();
+        return;
+      }
+      if (
+        !speechSynthesis.speaking &&
+        !speechSynthesis.pending &&
+        chunkIndexRef.current < chunksRef.current.length
+      ) {
+        speakChunkAt(chunkIndexRef.current);
+      }
+    }, 1500);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listening]);
 
   // Stop the audio when you leave this page
   useEffect(() => {
@@ -645,7 +528,7 @@ export default function ReadPage() {
             className={`${btn} ${listening ? "bg-navy text-paper border-navy" : ""}`}
             onClick={toggleListen}
           >
-            {listening ? (audioLoading ? "Preparing… (tap to cancel)" : "⏹ Stop") : "▶ Listen from this page"}
+            {listening ? "⏹ Stop" : "▶ Listen from this page"}
           </button>
           {listening && (
             <button className={btn} onClick={skipForward}>
