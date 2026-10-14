@@ -33,6 +33,10 @@ export default function LibraryPage() {
   // Playback state for the currently speaking document
   const chunksRef = useRef<string[]>([]);
   const chunkIndexRef = useRef(0);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const wakeLockRef = useRef<any>(null);
+  const activeRef = useRef(false);
+  const speakTokenRef = useRef(0);
 
   // Remember the search box and category when you leave and come back
   useEffect(() => {
@@ -92,6 +96,33 @@ export default function LibraryPage() {
     load();
   }, []);
 
+  // If the phone silently stops speaking partway through, start the same piece again
+  useEffect(() => {
+    if (!speakingId) return;
+    const t = setInterval(() => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+      if (!activeRef.current) return;
+      if (speechSynthesis.paused) {
+        speechSynthesis.resume();
+        return;
+      }
+      if (
+        !speechSynthesis.speaking &&
+        !speechSynthesis.pending &&
+        chunkIndexRef.current < chunksRef.current.length
+      ) {
+        speakChunkAt(chunkIndexRef.current);
+      }
+    }, 1500);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speakingId]);
+
+  useEffect(() => {
+    return () => releaseWakeLock();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const categories = ["All", ...Array.from(new Set(docs.map((d) => d.category)))];
 
   const filtered = docs.filter((d) => {
@@ -117,16 +148,41 @@ export default function LibraryPage() {
     router.push(`/read?doc=${doc.id}`);
   }
 
+  async function acquireWakeLock() {
+    try {
+      const nav: any = navigator;
+      if (nav.wakeLock) wakeLockRef.current = await nav.wakeLock.request("screen");
+    } catch {}
+  }
+
+  function releaseWakeLock() {
+    try {
+      wakeLockRef.current?.release();
+    } catch {}
+    wakeLockRef.current = null;
+  }
+
   function speakChunkAt(index: number) {
     if (index >= chunksRef.current.length) {
+      activeRef.current = false;
       setSpeakingId(null);
+      releaseWakeLock();
       return;
     }
     chunkIndexRef.current = index;
+    const myToken = ++speakTokenRef.current;
     const utterance = new SpeechSynthesisUtterance(chunksRef.current[index]);
     utterance.onend = () => {
+      if (myToken !== speakTokenRef.current) return;
       speakChunkAt(chunkIndexRef.current + 1);
     };
+    utterance.onerror = (e: any) => {
+      if (myToken !== speakTokenRef.current) return;
+      if (e?.error === "canceled" || e?.error === "interrupted") return;
+      speakChunkAt(chunkIndexRef.current + 1);
+    };
+    // Keep a reference, otherwise the phone can drop the voice partway through
+    utteranceRef.current = utterance;
     speechSynthesis.speak(utterance);
   }
 
@@ -138,6 +194,14 @@ export default function LibraryPage() {
   function skipBack() {
     speechSynthesis.cancel();
     speakChunkAt(Math.max(0, chunkIndexRef.current - 1));
+  }
+
+  function stopSpeaking() {
+    activeRef.current = false;
+    speakTokenRef.current++;
+    speechSynthesis.cancel();
+    setSpeakingId(null);
+    releaseWakeLock();
   }
 
   async function listenToDoc(doc: Doc) {
@@ -155,10 +219,15 @@ export default function LibraryPage() {
     });
 
     if (speakingId === doc.id) {
-      speechSynthesis.cancel();
-      setSpeakingId(null);
+      stopSpeaking();
       return;
     }
+
+    // Starting a new document: stop whatever was playing
+    activeRef.current = false;
+    speakTokenRef.current++;
+    speechSynthesis.cancel();
+    chunksRef.current = [];
 
     let pdfUrl = await getCachedBlobUrl(doc);
 
@@ -178,20 +247,36 @@ export default function LibraryPage() {
     const { extractPdfText } = await import("@/lib/pdfText");
     const text = await extractPdfText(pdfUrl);
 
+    // Split into short pieces so the phone never gets one long utterance
     const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+    const pieces: string[] = [];
+    for (const sentence of sentences) {
+      let rest = sentence.trim();
+      while (rest.length > 180) {
+        let cut = rest.lastIndexOf(", ", 180);
+        if (cut < 60) cut = rest.lastIndexOf(" ", 180);
+        if (cut < 60) cut = 180;
+        pieces.push(rest.slice(0, cut + 1).trim());
+        rest = rest.slice(cut + 1).trim();
+      }
+      if (rest) pieces.push(rest);
+    }
+
     const chunks: string[] = [];
     let current = "";
-    for (const sentence of sentences) {
-      if ((current + sentence).length > 200) {
+    for (const piece of pieces) {
+      if ((current + " " + piece).length > 200) {
         if (current) chunks.push(current.trim());
-        current = sentence;
+        current = piece;
       } else {
-        current += sentence;
+        current = current ? current + " " + piece : piece;
       }
     }
     if (current) chunks.push(current.trim());
 
     chunksRef.current = chunks;
+    activeRef.current = true;
+    acquireWakeLock();
     speakChunkAt(0);
   }
 
