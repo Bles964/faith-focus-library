@@ -5,6 +5,40 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabaseClient";
 
 type DocLite = { id: string; title: string };
+type Chunk = { text: string; page: number };
+
+// A tiny silent sound, used to unlock audio on phones when you tap Listen
+const SILENT_WAV =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+
+// Cut one page of text into short pieces (a few sentences each)
+function chunkText(text: string): string[] {
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+  const pieces: string[] = [];
+  for (const sentence of sentences) {
+    let rest = sentence.trim();
+    while (rest.length > 380) {
+      let cut = rest.lastIndexOf(", ", 380);
+      if (cut < 100) cut = rest.lastIndexOf(" ", 380);
+      if (cut < 100) cut = 380;
+      pieces.push(rest.slice(0, cut + 1).trim());
+      rest = rest.slice(cut + 1).trim();
+    }
+    if (rest) pieces.push(rest);
+  }
+  const chunks: string[] = [];
+  let current = "";
+  for (const piece of pieces) {
+    if ((current + " " + piece).length > 450) {
+      if (current) chunks.push(current.trim());
+      current = piece;
+    } else {
+      current = current ? current + " " + piece : piece;
+    }
+  }
+  if (current) chunks.push(current.trim());
+  return chunks;
+}
 
 export default function ReadPage() {
   const supabase = createClient();
@@ -19,6 +53,8 @@ export default function ReadPage() {
   const [numPages, setNumPages] = useState(0);
   const [page, setPage] = useState(1);
   const [zoom, setZoom] = useState(1);
+  const [listening, setListening] = useState(false);
+  const [audioLoading, setAudioLoading] = useState(false);
 
   const pdfRef = useRef<any>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -26,13 +62,288 @@ export default function ReadPage() {
   const renderTaskRef = useRef<any>(null);
   const touchRef = useRef<{ x: number; y: number } | null>(null);
   const loadTokenRef = useRef(0);
+  const pageRef = useRef(1);
+
+  // Listening
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const prefetchRef = useRef<Map<number, Promise<string>>>(new Map());
+  const chunksRef = useRef<Chunk[]>([]);
+  const chunkIndexRef = useRef(0);
+  const tokenRef = useRef(0);
+  const usingFallbackRef = useRef(false);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+
+  /* ---------------- Listening ---------------- */
+
+  function getAudio(): HTMLAudioElement {
+    if (!audioRef.current) {
+      const a = new Audio();
+      a.preload = "auto";
+      audioRef.current = a;
+    }
+    return audioRef.current;
+  }
+
+  async function fetchChunkAudio(text: string): Promise<string> {
+    let lastErr = "audio failed";
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const signal =
+          typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+            ? (AbortSignal as any).timeout(25000)
+            : undefined;
+        const res = await fetch("/api/narrate-free", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+          signal,
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          return URL.createObjectURL(blob);
+        }
+        let msg = "";
+        try {
+          msg = (await res.json()).error;
+        } catch {}
+        lastErr = msg || `status ${res.status}`;
+      } catch (e: any) {
+        lastErr = e?.message || "network error";
+      }
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
+    throw new Error(lastErr);
+  }
+
+  function prefetch(index: number) {
+    if (index >= chunksRef.current.length) return;
+    if (prefetchRef.current.has(index)) return;
+    const p = fetchChunkAudio(chunksRef.current[index].text);
+    p.catch(() => {});
+    prefetchRef.current.set(index, p);
+  }
+
+  function clearPrefetch() {
+    prefetchRef.current.forEach((p) => {
+      p.then((u) => URL.revokeObjectURL(u)).catch(() => {});
+    });
+    prefetchRef.current.clear();
+  }
+
+  function followPage(index: number) {
+    const pg = chunksRef.current[index]?.page;
+    if (pg && pg !== pageRef.current) {
+      pageRef.current = pg;
+      setPage(pg);
+      window.scrollTo({ top: 0 });
+    }
+  }
+
+  function finishListening() {
+    setListening(false);
+    setAudioLoading(false);
+    clearPrefetch();
+  }
+
+  function stopListening() {
+    tokenRef.current++;
+    const a = audioRef.current;
+    if (a) {
+      a.onended = null;
+      a.onerror = null;
+      a.onplaying = null;
+      a.pause();
+    }
+    clearPrefetch();
+    try {
+      speechSynthesis.cancel();
+    } catch {}
+    setListening(false);
+    setAudioLoading(false);
+  }
+
+  function fallbackSpeak(token: number, index: number) {
+    if (token !== tokenRef.current) return;
+    if (index >= chunksRef.current.length) {
+      finishListening();
+      return;
+    }
+    chunkIndexRef.current = index;
+    followPage(index);
+    const u = new SpeechSynthesisUtterance(chunksRef.current[index].text);
+    u.onend = () => fallbackSpeak(token, index + 1);
+    u.onerror = (e: any) => {
+      if (token !== tokenRef.current) return;
+      if (e?.error === "canceled" || e?.error === "interrupted") return;
+      fallbackSpeak(token, index + 1);
+    };
+    utteranceRef.current = u;
+    setAudioLoading(false);
+    speechSynthesis.speak(u);
+  }
+
+  async function playChunk(index: number, token: number) {
+    if (token !== tokenRef.current) return;
+    if (index >= chunksRef.current.length) {
+      finishListening();
+      return;
+    }
+    chunkIndexRef.current = index;
+    prefetch(index);
+
+    let url: string;
+    try {
+      url = await (prefetchRef.current.get(index) as Promise<string>);
+    } catch (e: any) {
+      prefetchRef.current.delete(index);
+      if (token !== tokenRef.current) return;
+      if (index === 0) {
+        usingFallbackRef.current = true;
+        alert(
+          "The natural voice is not available right now (" +
+            (e?.message || "error") +
+            "). Using your phone's voice instead."
+        );
+        fallbackSpeak(token, 0);
+        return;
+      }
+      playChunk(index + 1, token);
+      return;
+    }
+    if (token !== tokenRef.current) return;
+
+    prefetch(index + 1);
+    prefetch(index + 2);
+    followPage(index);
+
+    const audio = getAudio();
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      prefetchRef.current.delete(index);
+      playChunk(index + 1, token);
+    };
+    audio.onerror = () => {
+      playChunk(index + 1, token);
+    };
+    audio.onplaying = () => setAudioLoading(false);
+    audio.src = url;
+    try {
+      await audio.play();
+    } catch (e: any) {
+      if (e?.name === "NotAllowedError" && token === tokenRef.current) {
+        stopListening();
+        alert("Tap Listen again to start the audio.");
+      }
+    }
+  }
+
+  function skipForward() {
+    const token = ++tokenRef.current;
+    if (usingFallbackRef.current) {
+      try {
+        speechSynthesis.cancel();
+      } catch {}
+      fallbackSpeak(token, chunkIndexRef.current + 1);
+      return;
+    }
+    audioRef.current?.pause();
+    playChunk(chunkIndexRef.current + 1, token);
+  }
+
+  function skipBack() {
+    const token = ++tokenRef.current;
+    if (usingFallbackRef.current) {
+      try {
+        speechSynthesis.cancel();
+      } catch {}
+      fallbackSpeak(token, Math.max(0, chunkIndexRef.current - 1));
+      return;
+    }
+    audioRef.current?.pause();
+    playChunk(Math.max(0, chunkIndexRef.current - 1), token);
+  }
+
+  function setMediaSession() {
+    try {
+      const ms: any = (navigator as any).mediaSession;
+      if (!ms) return;
+      ms.metadata = new (window as any).MediaMetadata({
+        title: title || "Reading aloud",
+        artist: "Faith and Focus Library",
+      });
+      ms.setActionHandler("nexttrack", skipForward);
+      ms.setActionHandler("previoustrack", skipBack);
+      ms.setActionHandler("pause", () => audioRef.current?.pause());
+      ms.setActionHandler("play", () => audioRef.current?.play());
+    } catch {}
+  }
+
+  async function toggleListen() {
+    if (listening) {
+      stopListening();
+      return;
+    }
+    const pdf = pdfRef.current;
+    if (!pdf) return;
+
+    // Unlock audio on phones while the tap is still fresh
+    const audio = getAudio();
+    stopListening();
+    usingFallbackRef.current = false;
+    audio.src = SILENT_WAV;
+    audio.play().catch(() => {});
+
+    setListening(true);
+    setAudioLoading(true);
+
+    try {
+      const startPage = pageRef.current;
+      const chunks: Chunk[] = [];
+      for (let p = startPage; p <= pdf.numPages; p++) {
+        const pg = await pdf.getPage(p);
+        const content = await pg.getTextContent();
+        const text = content.items
+          .map((it: any) => it.str)
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!text) continue;
+        for (const c of chunkText(text)) chunks.push({ text: c, page: p });
+      }
+      if (chunks.length === 0) throw new Error("No readable text was found from this page onward.");
+
+      chunksRef.current = chunks;
+      const token = ++tokenRef.current;
+      setMediaSession();
+      playChunk(0, token);
+    } catch (e: any) {
+      stopListening();
+      alert(e?.message ?? "Could not start the audio.");
+    }
+  }
+
+  // Stop the audio when you leave this page
+  useEffect(() => {
+    return () => {
+      stopListening();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ---------------- Loading and drawing ---------------- */
 
   async function loadDocument(id: string) {
     const token = ++loadTokenRef.current;
+    stopListening();
     setError("");
     setStatus("Opening…");
     setNumPages(0);
     setPage(1);
+    pageRef.current = 1;
     setZoom(1);
     pdfRef.current = null;
 
@@ -160,11 +471,13 @@ export default function ReadPage() {
 
   function goTo(n: number) {
     const clamped = Math.max(1, Math.min(numPages, n));
+    pageRef.current = clamped;
     setPage(clamped);
     window.scrollTo({ top: 0 });
   }
 
   function goBack() {
+    stopListening();
     if (typeof window !== "undefined" && window.history.length > 1) router.back();
     else router.push("/library");
   }
@@ -311,13 +624,34 @@ export default function ReadPage() {
       </div>
 
       {numPages > 0 && (
-        <div className="flex justify-between mt-3">
+        <div className="flex justify-between mt-3 mb-20">
           <button className={btn} onClick={() => goTo(page - 1)} disabled={page <= 1}>
             Prev
           </button>
           <button className={btn} onClick={() => goTo(page + 1)} disabled={page >= numPages}>
             Next
           </button>
+        </div>
+      )}
+
+      {numPages > 0 && (
+        <div className="sticky bottom-0 z-10 bg-white border-t border-navy/15 py-2 px-2 flex flex-wrap items-center justify-center gap-2 -mx-2">
+          {listening && (
+            <button className={btn} onClick={skipBack}>
+              ⏪ Back
+            </button>
+          )}
+          <button
+            className={`${btn} ${listening ? "bg-navy text-paper border-navy" : ""}`}
+            onClick={toggleListen}
+          >
+            {listening ? (audioLoading ? "Preparing… (tap to cancel)" : "⏹ Stop") : "▶ Listen from this page"}
+          </button>
+          {listening && (
+            <button className={btn} onClick={skipForward}>
+              Forward ⏩
+            </button>
+          )}
         </div>
       )}
     </div>
