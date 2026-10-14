@@ -16,6 +16,10 @@ type Doc = {
 
 const CACHE_NAME = "library-pdfs-v1";
 
+// A tiny silent sound, used to unlock audio on phones when you tap Listen
+const SILENT_WAV =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+
 export default function LibraryPage() {
   const supabase = createClient();
   const router = useRouter();
@@ -33,10 +37,11 @@ export default function LibraryPage() {
   // Playback state for the currently speaking document
   const chunksRef = useRef<string[]>([]);
   const chunkIndexRef = useRef(0);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const wakeLockRef = useRef<any>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const prefetchRef = useRef<Map<number, Promise<string>>>(new Map());
   const activeRef = useRef(false);
-  const speakTokenRef = useRef(0);
+  const tokenRef = useRef(0);
+  const [audioLoading, setAudioLoading] = useState(false);
 
   // Remember the search box and category when you leave and come back
   useEffect(() => {
@@ -96,33 +101,6 @@ export default function LibraryPage() {
     load();
   }, []);
 
-  // If the phone silently stops speaking partway through, start the same piece again
-  useEffect(() => {
-    if (!speakingId) return;
-    const t = setInterval(() => {
-      if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-      if (!activeRef.current) return;
-      if (speechSynthesis.paused) {
-        speechSynthesis.resume();
-        return;
-      }
-      if (
-        !speechSynthesis.speaking &&
-        !speechSynthesis.pending &&
-        chunkIndexRef.current < chunksRef.current.length
-      ) {
-        speakChunkAt(chunkIndexRef.current);
-      }
-    }, 1500);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [speakingId]);
-
-  useEffect(() => {
-    return () => releaseWakeLock();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const categories = ["All", ...Array.from(new Set(docs.map((d) => d.category)))];
 
   const filtered = docs.filter((d) => {
@@ -148,136 +126,221 @@ export default function LibraryPage() {
     router.push(`/read?doc=${doc.id}`);
   }
 
-  async function acquireWakeLock() {
-    try {
-      const nav: any = navigator;
-      if (nav.wakeLock) wakeLockRef.current = await nav.wakeLock.request("screen");
-    } catch {}
+  function getAudio(): HTMLAudioElement {
+    if (!audioRef.current) {
+      const a = new Audio();
+      a.preload = "auto";
+      audioRef.current = a;
+    }
+    return audioRef.current;
   }
 
-  function releaseWakeLock() {
-    try {
-      wakeLockRef.current?.release();
-    } catch {}
-    wakeLockRef.current = null;
+  async function fetchChunkAudio(text: string): Promise<string> {
+    let lastErr = "audio failed";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch("/api/narrate-free", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          return URL.createObjectURL(blob);
+        }
+        let msg = "";
+        try {
+          msg = (await res.json()).error;
+        } catch {}
+        lastErr = msg || `status ${res.status}`;
+      } catch (e: any) {
+        lastErr = e?.message || "network error";
+      }
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
+    throw new Error(lastErr);
   }
 
-  function speakChunkAt(index: number) {
+  function prefetch(index: number) {
+    if (index >= chunksRef.current.length) return;
+    if (prefetchRef.current.has(index)) return;
+    const p = fetchChunkAudio(chunksRef.current[index]);
+    p.catch(() => {});
+    prefetchRef.current.set(index, p);
+  }
+
+  function clearPrefetch() {
+    prefetchRef.current.forEach((p) => {
+      p.then((u) => URL.revokeObjectURL(u)).catch(() => {});
+    });
+    prefetchRef.current.clear();
+  }
+
+  function finishPlayback() {
+    activeRef.current = false;
+    setSpeakingId(null);
+    setAudioLoading(false);
+    clearPrefetch();
+  }
+
+  function stopPlayback() {
+    tokenRef.current++;
+    activeRef.current = false;
+    const a = audioRef.current;
+    if (a) {
+      a.onended = null;
+      a.onerror = null;
+      a.onplaying = null;
+      a.pause();
+    }
+    clearPrefetch();
+    setSpeakingId(null);
+    setAudioLoading(false);
+  }
+
+  async function playChunk(index: number, token: number) {
+    if (token !== tokenRef.current) return;
     if (index >= chunksRef.current.length) {
-      activeRef.current = false;
-      setSpeakingId(null);
-      releaseWakeLock();
+      finishPlayback();
       return;
     }
     chunkIndexRef.current = index;
-    const myToken = ++speakTokenRef.current;
-    const utterance = new SpeechSynthesisUtterance(chunksRef.current[index]);
-    utterance.onend = () => {
-      if (myToken !== speakTokenRef.current) return;
-      speakChunkAt(chunkIndexRef.current + 1);
+    prefetch(index);
+
+    let url: string;
+    try {
+      url = await (prefetchRef.current.get(index) as Promise<string>);
+    } catch {
+      prefetchRef.current.delete(index);
+      if (token !== tokenRef.current) return;
+      playChunk(index + 1, token); // skip a piece that could not be made
+      return;
+    }
+    if (token !== tokenRef.current) return;
+
+    prefetch(index + 1);
+    prefetch(index + 2);
+
+    const audio = getAudio();
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      prefetchRef.current.delete(index);
+      playChunk(index + 1, token);
     };
-    utterance.onerror = (e: any) => {
-      if (myToken !== speakTokenRef.current) return;
-      if (e?.error === "canceled" || e?.error === "interrupted") return;
-      speakChunkAt(chunkIndexRef.current + 1);
+    audio.onerror = () => {
+      playChunk(index + 1, token);
     };
-    // Keep a reference, otherwise the phone can drop the voice partway through
-    utteranceRef.current = utterance;
-    speechSynthesis.speak(utterance);
+    audio.onplaying = () => setAudioLoading(false);
+    audio.src = url;
+    try {
+      await audio.play();
+    } catch (e: any) {
+      if (e?.name === "NotAllowedError" && token === tokenRef.current) {
+        stopPlayback();
+        alert("Tap Listen again to start the audio.");
+      }
+    }
   }
 
   function skipForward() {
-    speechSynthesis.cancel();
-    speakChunkAt(chunkIndexRef.current + 1);
+    const token = ++tokenRef.current;
+    audioRef.current?.pause();
+    playChunk(chunkIndexRef.current + 1, token);
   }
 
   function skipBack() {
-    speechSynthesis.cancel();
-    speakChunkAt(Math.max(0, chunkIndexRef.current - 1));
+    const token = ++tokenRef.current;
+    audioRef.current?.pause();
+    playChunk(Math.max(0, chunkIndexRef.current - 1), token);
   }
 
-  function stopSpeaking() {
-    activeRef.current = false;
-    speakTokenRef.current++;
-    speechSynthesis.cancel();
-    setSpeakingId(null);
-    releaseWakeLock();
+  function setMediaSession(title: string) {
+    try {
+      const ms: any = (navigator as any).mediaSession;
+      if (!ms) return;
+      ms.metadata = new (window as any).MediaMetadata({
+        title,
+        artist: "Faith and Focus Library",
+      });
+      ms.setActionHandler("nexttrack", skipForward);
+      ms.setActionHandler("previoustrack", skipBack);
+      ms.setActionHandler("pause", () => audioRef.current?.pause());
+      ms.setActionHandler("play", () => audioRef.current?.play());
+    } catch {}
   }
 
   async function listenToDoc(doc: Doc) {
-    const primer = new SpeechSynthesisUtterance("");
-    speechSynthesis.speak(primer);
-
-    await new Promise<void>((resolve) => {
-      const voices = speechSynthesis.getVoices();
-      if (voices.length > 0) {
-        resolve();
-      } else {
-        speechSynthesis.onvoiceschanged = () => resolve();
-        setTimeout(() => resolve(), 1000);
-      }
-    });
-
+    // Tapping Listen again on the same document stops it
     if (speakingId === doc.id) {
-      stopSpeaking();
+      stopPlayback();
       return;
     }
 
-    // Starting a new document: stop whatever was playing
-    activeRef.current = false;
-    speakTokenRef.current++;
-    speechSynthesis.cancel();
-    chunksRef.current = [];
-
-    let pdfUrl = await getCachedBlobUrl(doc);
-
-    if (!pdfUrl) {
-      const { data, error } = await supabase.storage
-        .from("library-pdfs")
-        .createSignedUrl(doc.file_path, 60 * 5);
-
-      if (!data?.signedUrl) {
-        alert(error?.message ?? "Could not load this file. You may be offline and this document hasn't been downloaded yet.");
-        return;
-      }
-      pdfUrl = data.signedUrl;
-    }
+    // Unlock audio on phones while the tap is still fresh
+    const audio = getAudio();
+    stopPlayback();
+    audio.src = SILENT_WAV;
+    audio.play().catch(() => {});
 
     setSpeakingId(doc.id);
-    const { extractPdfText } = await import("@/lib/pdfText");
-    const text = await extractPdfText(pdfUrl);
+    setAudioLoading(true);
 
-    // Split into short pieces so the phone never gets one long utterance
-    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-    const pieces: string[] = [];
-    for (const sentence of sentences) {
-      let rest = sentence.trim();
-      while (rest.length > 180) {
-        let cut = rest.lastIndexOf(", ", 180);
-        if (cut < 60) cut = rest.lastIndexOf(" ", 180);
-        if (cut < 60) cut = 180;
-        pieces.push(rest.slice(0, cut + 1).trim());
-        rest = rest.slice(cut + 1).trim();
+    try {
+      let pdfUrl = await getCachedBlobUrl(doc);
+      if (!pdfUrl) {
+        const { data, error } = await supabase.storage
+          .from("library-pdfs")
+          .createSignedUrl(doc.file_path, 60 * 5);
+        if (!data?.signedUrl) {
+          throw new Error(
+            error?.message ??
+              "Could not load this file. You may be offline and this document hasn't been downloaded yet."
+          );
+        }
+        pdfUrl = data.signedUrl;
       }
-      if (rest) pieces.push(rest);
-    }
 
-    const chunks: string[] = [];
-    let current = "";
-    for (const piece of pieces) {
-      if ((current + " " + piece).length > 200) {
-        if (current) chunks.push(current.trim());
-        current = piece;
-      } else {
-        current = current ? current + " " + piece : piece;
+      const { extractPdfText } = await import("@/lib/pdfText");
+      const text = await extractPdfText(pdfUrl);
+
+      // Cut the text into pieces of a few sentences each
+      const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+      const pieces: string[] = [];
+      for (const sentence of sentences) {
+        let rest = sentence.trim();
+        while (rest.length > 380) {
+          let cut = rest.lastIndexOf(", ", 380);
+          if (cut < 100) cut = rest.lastIndexOf(" ", 380);
+          if (cut < 100) cut = 380;
+          pieces.push(rest.slice(0, cut + 1).trim());
+          rest = rest.slice(cut + 1).trim();
+        }
+        if (rest) pieces.push(rest);
       }
-    }
-    if (current) chunks.push(current.trim());
 
-    chunksRef.current = chunks;
-    activeRef.current = true;
-    acquireWakeLock();
-    speakChunkAt(0);
+      const chunks: string[] = [];
+      let current = "";
+      for (const piece of pieces) {
+        if ((current + " " + piece).length > 450) {
+          if (current) chunks.push(current.trim());
+          current = piece;
+        } else {
+          current = current ? current + " " + piece : piece;
+        }
+      }
+      if (current) chunks.push(current.trim());
+
+      if (chunks.length === 0) throw new Error("No readable text was found in this document.");
+
+      chunksRef.current = chunks;
+      const token = ++tokenRef.current;
+      activeRef.current = true;
+      setMediaSession(doc.title);
+      playChunk(0, token);
+    } catch (e: any) {
+      stopPlayback();
+      alert(e?.message ?? "Could not start the audio.");
+    }
   }
 
   async function downloadForOffline(doc: Doc) {
@@ -456,7 +519,7 @@ export default function LibraryPage() {
                     onClick={() => listenToDoc(doc)}
                     className="text-xs text-navy/60 hover:text-gold underline"
                   >
-                    {isSpeaking ? "Stop" : "Listen"}
+                    {isSpeaking ? (audioLoading ? "Preparing… (tap to cancel)" : "Stop") : "Listen"}
                   </button>
                   {isSpeaking && (
                     <>
