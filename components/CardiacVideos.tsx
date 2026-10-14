@@ -1,4 +1,5 @@
 "use client";
+
 import AutoVideoExporter from "./AutoVideoExporter";
 import CardiacStageSvg from "./CardiacStageSvg";
 import type { CardiacStage } from "./CardiacStageSvg";
@@ -8,55 +9,55 @@ const PART1: CardiacStage[] = [
     kind: "a1",
     label: "The heart as a house",
     narration:
-      "Think of the heart as a house: plumbing, which is the coronary arteries, doors, which are the valves, a protective sac, the pericardium, and wiring, the conduction system. Whatever breaks, the end result is usually heart failure. Surgery is for when the structure itself is broken: a blocked pipe, a leaking or jammed door, a squeezing sac, or a tumour.",
+      "Think of the heart as a house. The coronary arteries are the plumbing, the valves are the doors, the pericardium is the protective sac, and the conduction system is the electrical wiring. Cardiac surgery corrects structural problems such as blocked arteries, diseased valves, tamponade, and tumours.",
   },
   {
     kind: "a2",
     label: "Mechanical or electrical",
     narration:
-      "Mechanical failures are tamponade, constriction, valve disease, coronary blockage and tumours, fixed by drainage, valve surgery, bypass or excision. Electrical failures are heart block, arrhythmias and cardiac arrest, fixed by pacing or defibrillation. In third-degree heart block no atrial impulse reaches the ventricles, and the patient needs a pacemaker.",
+      "Mechanical problems include tamponade, constriction, valve disease, coronary obstruction, and tumours. Treatment may require drainage, valve surgery, bypass, or tumour excision. Electrical problems include arrhythmias and heart block. Complete heart block may require a permanent pacemaker, while life-threatening shockable arrhythmias may require defibrillation.",
   },
   {
     kind: "a3",
     label: "Types of shock",
     narration:
-      "Separate the four types of shock. Cardiogenic is pump failure, such as massive heart attack. Obstructive is a blockage to filling or outflow: T, P, T, for Tamponade, tension Pneumothorax, and Thromboembolism. Hypovolaemic is too little volume, and distributive is vasodilatation, as in sepsis.",
+      "Remember four types of shock. Cardiogenic shock is pump failure, such as after a massive myocardial infarction. Obstructive shock results from impaired filling or outflow: tamponade, tension pneumothorax, and thromboembolism. Hypovolaemic shock is caused by fluid or blood loss. Distributive shock results from abnormal vasodilatation, as in sepsis.",
   },
   {
     kind: "a4",
     label: "Coronaries and valves",
     narration:
-      "The right coronary supplies the right heart and the S A and A V nodes, so its blockage causes inferior infarcts and heart block. The left anterior descending artery supplies the septum, and a complete blockage is the widowmaker. The mitral valve has two leaflets and an area of 4 to 6 square centimetres, bigger than the aortic valve's 3 to 4.",
+      "The right coronary artery commonly supplies the inferior heart and may supply the SA and AV nodes. The left anterior descending artery supplies the anterior left ventricle and interventricular septum; proximal occlusion can cause a massive infarction. The mitral valve normally has two leaflets and an area of about four to six square centimetres.",
   },
   {
     kind: "a5",
     label: "The pericardium",
     narration:
-      "The pericardium is a two-layer bag with 15 to 35 millilitres of lubricating fluid. It holds the heart in place, reduces friction and limits sudden over-distension. That limited stretch is exactly why fluid that collects fast causes tamponade.",
+      "The pericardium is a double-layered sac containing a small amount of lubricating fluid, normally around fifteen to fifty millilitres. It anchors the heart, reduces friction, and limits sudden overdistension. Rapid fluid accumulation can overwhelm its stretch capacity, compress the heart, and cause cardiac tamponade.",
   },
   {
     kind: "a6",
     label: "Pericardial causes",
     narration:
-      "Remember TRUMP, C, V, I: T B or Trauma, Radiation, Uraemia, Malignancy, Post-op or Post-M I, Collagen-vascular, Viral or bacterial, and Idiopathic. In Nigeria and the tropics, think tuberculosis first for a large effusion or constriction. Pericarditis gives pleuritic chest pain, better sitting forward, with a friction rub.",
+      "Important causes of pericardial disease include tuberculosis, trauma, radiation, uraemia, malignancy, previous surgery or myocardial infarction, autoimmune disease, infection, and idiopathic inflammation. In Nigeria, consider tuberculosis in unexplained large effusions or constrictive pericarditis. Acute pericarditis typically causes pleuritic chest pain relieved by sitting forward and may produce a pericardial friction rub.",
   },
   {
     kind: "a7",
     label: "Tamponade",
     narration:
-      "In tamponade, rising pressure in the sac squashes the right atrium and right ventricle, so the heart cannot fill and output falls. Beck's triad is three H's: Hypotension, Hushed heart sounds, and Hugely distended neck veins. Pulsus paradoxus is a fall in systolic pressure of more than 10 millimetres of mercury on inspiration.",
+      "Cardiac tamponade occurs when pericardial pressure prevents adequate ventricular filling, reducing cardiac output. Beck's triad is hypotension, muffled heart sounds, and raised jugular venous pressure. Pulsus paradoxus is an inspiratory fall in systolic blood pressure exceeding ten millimetres of mercury. Suspected haemodynamically significant tamponade requires urgent assessment and drainage.",
   },
   {
     kind: "a8",
-    label: "Constrict vs restrict",
+    label: "Constrict versus restrict",
     narration:
-      "In constriction, a thick, scarred, often calcified pericardium wraps the heart in a rigid shell, so filling stops abruptly. Look for a pericardial knock, Kussmaul sign, and a thickened pericardium on C T. Restriction is a stiff muscle, with a normal pericardium. Constriction can be cured by cutting the shell, while restriction cannot.",
+      "Constrictive pericarditis is caused by a rigid, thickened pericardium that restricts cardiac filling. Clues include a pericardial knock, Kussmaul sign, and characteristic echocardiographic or CT findings. Restrictive cardiomyopathy is primarily a stiff ventricular muscle with impaired filling. Selected patients with severe constriction may benefit from pericardiectomy; treatment of restriction depends on its cause.",
   },
   {
     kind: "a9",
     label: "Investigate and treat",
     narration:
-      "Echocardiography is the gold standard for effusion: under 10 millimetres is small, 10 to 19 moderate, and 20 or more large. The E C G may show low voltage and electrical alternans. Unstable tamponade needs echo-guided pericardiocentesis, with fluids to keep preload. Constriction needs pericardiectomy, usually through a median sternotomy, with anti-T B drugs if the cause is T B.",
+      "Echocardiography is the key initial investigation for pericardial effusion and tamponade. ECG may show low voltage or electrical alternans. Unstable tamponade requires urgent image-guided pericardiocentesis, with supportive measures while drainage is arranged. Chronic constriction may require pericardiectomy. If tuberculosis is responsible, appropriate anti-tuberculosis treatment is essential.",
   },
 ];
 
@@ -65,81 +66,122 @@ const PART2: CardiacStage[] = [
     kind: "b1",
     label: "Two ways a valve fails",
     narration:
-      "A valve fails in two ways: too tight, which is stenosis, or too leaky, which is regurgitation. Tight means pressure builds behind it, and leaky means volume overload in front of it. Rheumatic heart disease is the main cause in developing countries: antibodies against group A streptococcus attack the valves, mostly the mitral. Remember the Jones criteria: Joints, carditis, Nodules, Erythema marginatum, Sydenham chorea.",
+      "Heart valves fail through stenosis, which obstructs forward flow, or regurgitation, which allows backward flow. Stenosis increases pressure behind the valve; regurgitation causes volume overload. Rheumatic heart disease remains important in Nigeria and other resource-limited settings, particularly affecting the mitral valve. Remember the Jones major criteria: carditis, arthritis, chorea, erythema marginatum, and subcutaneous nodules.",
   },
   {
     kind: "b2",
     label: "Mitral stenosis",
     narration:
-      "In mitral stenosis, a narrowed valve raises left atrial pressure and causes pulmonary hypertension. Listen for a loud first sound, an opening snap, then a rumbling diastolic murmur: snap then rumble. The closer the snap is to the second sound, the tighter the valve. Complications are A, E, H, H: atrial fibrillation, emboli, haemoptysis and hoarseness.",
+      "Mitral stenosis raises left atrial pressure and can cause pulmonary hypertension and atrial fibrillation. The classic murmur is a low-pitched mid-diastolic rumble at the apex, sometimes preceded by an opening snap. A shorter interval between the second heart sound and opening snap generally suggests more severe stenosis. Complications include embolic stroke, haemoptysis, and hoarseness.",
   },
   {
     kind: "b3",
     label: "Mitral regurgitation",
     narration:
-      "In mitral regurgitation, blood leaks back into the left atrium, giving a pansystolic murmur at the apex radiating to the axilla. The heart first copes by the Frank–Starling mechanism, then dilates and fails. Mitral valve prolapse is a floppy valve with a mid-systolic click. Repair is preferred in regurgitation, because it preserves the ventricle.",
+      "Mitral regurgitation sends blood backward into the left atrium during systole. It produces a pansystolic murmur at the apex radiating towards the axilla. Chronic disease causes left atrial and ventricular dilatation and may progress to heart failure. Mitral valve prolapse can produce a mid-systolic click. Valve repair is preferred when feasible.",
   },
   {
     kind: "b4",
     label: "Aortic stenosis",
     narration:
-      "Aortic stenosis raises the afterload on the left ventricle, with a slow-rising pulse and an ejection systolic murmur radiating to both carotids. Remember SAD: Syncope, Angina, Dyspnoea. Survival is about 5 years after angina, 3 after syncope, and 2 after heart failure. Treatment is valve replacement once it is symptomatic or severe.",
+      "Aortic stenosis obstructs left ventricular outflow. Look for a slow-rising pulse and an ejection systolic murmur radiating to the carotids. Remember SAD: syncope, angina, and dyspnoea. These symptoms indicate a poor prognosis in severe disease. Symptomatic severe aortic stenosis generally requires valve replacement or another appropriate valve intervention.",
   },
   {
     kind: "b5",
     label: "Aortic regurgitation",
     narration:
-      "In aortic regurgitation the ventricle fills from the atrium and from the aorta, so it dilates, even to cor bovinum. The pulse is collapsing with a wide pulse pressure, and the murmur is an early diastolic decrescendo, with an Austin Flint murmur at the apex. Signs are Corrigan's pulse, de Musset's head nodding, and Quincke's nail-bed pulsation.",
+      "Aortic regurgitation allows blood to flow backward from the aorta into the left ventricle during diastole, causing ventricular volume overload and dilatation. Signs include a collapsing pulse and wide pulse pressure. The classic murmur is an early diastolic decrescendo. Other eponymous signs include Corrigan's pulse, de Musset's head nodding, and Quincke's nail-bed pulsation.",
   },
   {
     kind: "b6",
     label: "Mechanical or tissue",
     narration:
-      "Mechanical valves last forever, but the patient needs warfarin for life: mechanical means Must take warfarin. Bioprosthetic valves, from pig or cow, need no warfarin, but they wear out: Bio burns out. Auto means your own tissue, homo means human cadaver, and xeno means animal. Young patients get mechanical valves, and the elderly get tissue valves.",
+      "Mechanical valves are durable but usually require lifelong vitamin K antagonist anticoagulation, such as warfarin. Bioprosthetic valves usually have lower long-term anticoagulation requirements but may degenerate over time. Valve selection depends on age, bleeding risk, ability to maintain anticoagulation, pregnancy plans, and patient preference. Mechanical valves are not automatically the best choice for every young patient.",
   },
   {
     kind: "b7",
     label: "Warfarin and pregnancy",
     narration:
-      "Your lecturer's I N R targets are 2 to 2.5 for the mitral valve and 1.5 to 2 for the tricuspid. International guidelines usually say 2.5 to 3.5 for a mechanical mitral valve. In an exam, give your lecturer's number and show you know the guideline. Warfarin is teratogenic, so a woman with a mechanical valve needs counselling and a planned switch of anticoagulant before pregnancy.",
+      "Warfarin crosses the placenta and can cause fetal harm, but stopping it also risks mechanical valve thrombosis. A woman with a mechanical valve needs specialist pre-pregnancy counselling and an individualised anticoagulation plan. INR targets depend on the valve type, position, and thrombosis risk. Do not assume one target applies to every valve, and never change anticoagulation without specialist guidance.",
   },
   {
     kind: "b8",
     label: "Coronary artery disease",
     narration:
-      "Atherosclerosis narrows the coronaries. Partial blockage gives angina, and complete blockage kills muscle: infarction. By stenosis, 50 percent diameter loss is 75 percent area loss, so a moderate stenosis already limits flow on exertion. Disease is graded as single, double or triple vessel, with left main disease as its own high-risk category.",
+      "Coronary atherosclerosis narrows the arteries supplying the heart. Partial obstruction may cause exertional angina, while acute plaque disruption and thrombosis can cause myocardial infarction. A fifty percent reduction in vessel diameter corresponds to approximately seventy-five percent loss of cross-sectional area. Assess disease by its location, severity, symptoms, and functional effect.",
   },
   {
     kind: "b9",
     label: "Bypass surgery",
     narration:
-      "Bypass surgery doesn't unblock the old artery. It builds a detour. The strong indications are three-system disease, left main stenosis, diabetics with multivessel disease, and poor L V function with graftable vessels. The best graft is the left internal mammary artery to the L A D: LIMA loves LAD. Arteries last, veins fade. Watch for bleeding, atrial fibrillation on days 2 to 4, and sternal wound infection.",
+      "Coronary artery bypass grafting creates a route around obstructed coronary arteries. Important indications include significant left main disease and selected patients with complex multivessel disease, especially when diabetes or impaired ventricular function affects treatment choice. The left internal mammary artery graft to the LAD is a classic durable combination. Complications include bleeding, postoperative atrial fibrillation, and sternal wound infection.",
   },
   {
     kind: "b10",
     label: "Cardiac tumours",
     narration:
-      "Most tumours in the heart are secondary, and always malignant. The commonest primary tumour in adults is the myxoma, a benign, jelly-like growth on a stalk, usually in the left atrium of a woman aged 30 to 60. Its triad is E, O, C: Embolism, Obstruction, Constitutional symptoms. Echo is the imaging of choice, and treatment is open-heart excision, with a cuff of septum to reduce recurrence. The commonest malignant primary is angiosarcoma, which is very aggressive.",
+      "Secondary metastatic tumours involving the heart are more common than primary cardiac tumours. The commonest primary cardiac tumour in adults is myxoma, usually a benign mass in the left atrium. It may cause obstruction, embolism, and constitutional symptoms. Echocardiography is a key investigation, and surgical excision is usually required. Angiosarcoma is an aggressive malignant primary cardiac tumour.",
   },
 ];
 
-function Section({ title, stages, button, file }: { title: string; stages: CardiacStage[]; button: string; file: string }) {
+function Section({
+  title,
+  stages,
+  button,
+  file,
+}: {
+  title: string;
+  stages: CardiacStage[];
+  button: string;
+  file: string;
+}) {
   return (
     <div style={{ maxWidth: 480, margin: "0 auto", color: "#F4F1EA" }}>
-      <p style={{ color: "#D4AF37", fontSize: ".8rem", textTransform: "uppercase", marginBottom: 12 }}>{title}</p>
-      <AutoVideoExporter stages={stages} StageComponent={CardiacStageSvg} buttonLabel={button} fileName={file} />
+      <p
+        style={{
+          color: "#D4AF37",
+          fontSize: ".8rem",
+          textTransform: "uppercase",
+          marginBottom: 12,
+        }}
+      >
+        {title}
+      </p>
+
+      <AutoVideoExporter
+        stages={stages}
+        StageComponent={CardiacStageSvg}
+        buttonLabel={button}
+        fileName={file}
+      />
     </div>
   );
 }
 
-const rule = { margin: "40px 0", border: "none", borderTop: "1px solid #2A3E5C" } as const;
+const rule = {
+  margin: "40px 0",
+  border: "none",
+  borderTop: "1px solid #2A3E5C",
+} as const;
 
 export default function CardiacVideos() {
   return (
     <>
-      <Section title="Cardiac surgery 1: big picture and pericardium" stages={PART1} button="Make cardiac video 1" file="cardiac-part1.mp4" />
+      <Section
+        title="Cardiac surgery 1: big picture and pericardium"
+        stages={PART1}
+        button="Make cardiac video 1"
+        file="cardiac-part1.mp4"
+      />
+
       <hr style={rule} />
-      <Section title="Cardiac surgery 2: valves, bypass and tumours" stages={PART2} button="Make cardiac video 2" file="cardiac-part2.mp4" />
+
+      <Section
+        title="Cardiac surgery 2: valves, bypass and tumours"
+        stages={PART2}
+        button="Make cardiac video 2"
+        file="cardiac-part2.mp4"
+      />
     </>
   );
 }
