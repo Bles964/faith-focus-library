@@ -17,6 +17,21 @@ async function synth(text: string, voice: string) {
   return arrayBuffer;
 }
 
+// Open /api/narrate-free in a browser to test the voice. It plays a short sentence,
+// or shows the exact error if the voice service is not working.
+export async function GET(req: NextRequest) {
+  const text =
+    new URL(req.url).searchParams.get("text") || "Testing the voice. One, two, three.";
+  try {
+    const arrayBuffer = await synth(text.slice(0, 300), "en-US-AriaNeural");
+    return new NextResponse(arrayBuffer, {
+      headers: { "Content-Type": "audio/mpeg" },
+    });
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "TTS failed" }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   let body: any;
   try {
