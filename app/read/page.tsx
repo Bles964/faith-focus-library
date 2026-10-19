@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabaseClient";
+import { logActivity } from "@/lib/activity";
 
 type DocLite = { id: string; title: string };
 type Chunk = { text: string; page: number };
@@ -241,6 +242,7 @@ export default function ReadPage() {
       setTitle(doc.title);
       setFilePath(doc.file_path);
       setCurrentId(id);
+      logActivity("read", { path: "/read", docId: id, docTitle: doc.title });
 
       const { data: signed, error: urlErr } = await supabase.storage
         .from("library-pdfs")
