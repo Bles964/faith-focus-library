@@ -4,6 +4,8 @@ import "./globals.css";
 import { LockInProvider } from "@/components/LockInProvider";
 import LockInPill from "@/components/LockInPill";
 import NavLinks from "@/components/NavLinks";
+import WelcomeBot from "@/components/WelcomeBot";
+import ActivityTracker from "@/components/ActivityTracker";
 
 export const metadata: Metadata = {
   title: "Faith and Focus Library",
@@ -28,6 +30,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             Faith and Focus Academy
           </footer>
           <LockInPill />
+          <WelcomeBot />
+          <ActivityTracker />
         </LockInProvider>
       </body>
     </html>
