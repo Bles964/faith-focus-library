@@ -47,6 +47,9 @@ export default function NavLinks() {
       {isAdmin && (
         <Link href="/upload" className="hover:text-gold">Upload</Link>
       )}
+      {isAdmin && (
+        <Link href="/activity" className="hover:text-gold">Activity</Link>
+      )}
       <Link href="/focus" className="hover:text-gold">Focus</Link>
       <Link href="/videos" className="hover:text-gold">Videos</Link>
       <Link href="/login" className="hover:text-gold">Account</Link>
