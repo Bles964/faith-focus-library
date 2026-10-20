@@ -7,10 +7,11 @@ import NavLinks from "@/components/NavLinks";
 import WelcomeBot from "@/components/WelcomeBot";
 import ActivityTracker from "@/components/ActivityTracker";
 import AnnouncementBanner from "@/components/AnnouncementBanner";
+import Footer from "@/components/Footer";
 
 export const metadata: Metadata = {
-  title: "Faith and Focus Library",
-  description: "Your clinical study guide catalog",
+  title: "Faith and Focus Academy | Exam preparation for medical students",
+  description: "Clinical study guides, read-aloud and quizzes for MBBS, USMLE and OSCE preparation.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -28,9 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </header>
           <AnnouncementBanner />
           <main className="flex-1 max-w-5xl w-full mx-auto px-5 py-8">{children}</main>
-          <footer className="text-center text-xs text-navy/50 py-6">
-            Faith and Focus Academy
-          </footer>
+          <Footer />
           <LockInPill />
           <WelcomeBot />
           <ActivityTracker />
