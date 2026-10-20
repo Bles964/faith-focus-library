@@ -6,6 +6,7 @@ import LockInPill from "@/components/LockInPill";
 import NavLinks from "@/components/NavLinks";
 import WelcomeBot from "@/components/WelcomeBot";
 import ActivityTracker from "@/components/ActivityTracker";
+import AnnouncementBanner from "@/components/AnnouncementBanner";
 
 export const metadata: Metadata = {
   title: "Faith and Focus Library",
@@ -25,6 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <NavLinks />
             </div>
           </header>
+          <AnnouncementBanner />
           <main className="flex-1 max-w-5xl w-full mx-auto px-5 py-8">{children}</main>
           <footer className="text-center text-xs text-navy/50 py-6">
             Faith and Focus Academy
