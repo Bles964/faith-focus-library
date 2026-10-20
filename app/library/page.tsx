@@ -435,6 +435,7 @@ export default function LibraryPage() {
             const isOffline = offlineIds.has(doc.id);
             const isDownloading = downloadingId === doc.id;
             const isSpeaking = speakingId === doc.id;
+            const isNew = Date.now() - new Date(doc.created_at).getTime() < 7 * 24 * 60 * 60 * 1000;
             return (
               <div
                 key={doc.id}
@@ -446,6 +447,11 @@ export default function LibraryPage() {
                     {doc.specialty ? ` · ${doc.specialty}` : ""}
                     {isAdmin && isOffline ? " · Available offline" : ""}
                   </span>
+                  {isNew && (
+                    <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide bg-gold text-navy rounded-full px-2 py-0.5 align-middle">
+                      New
+                    </span>
+                  )}
                   <h2 className="font-serif text-lg text-navy mt-1">{doc.title}</h2>
                   {doc.description && (
                     <p className="text-sm text-navy/60 mt-1">{doc.description}</p>
