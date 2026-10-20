@@ -44,6 +44,9 @@ export default function ActivityPage() {
   const [showDone, setShowDone] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [anns, setAnns] = useState<{ id: number; message: string; created_at: string }[]>([]);
+  const [annText, setAnnText] = useState("");
+  const [annBusy, setAnnBusy] = useState(false);
 
   async function loadRows() {
     const { data, error: err } = await supabase
@@ -75,6 +78,48 @@ export default function ActivityPage() {
     setMsgs((prev) => prev.map((x) => (x.id === id ? { ...x, handled: true } : x)));
   }
 
+  async function loadAnns() {
+    const { data } = await supabase
+      .from("announcements")
+      .select("id,message,created_at")
+      .eq("active", true)
+      .order("created_at", { ascending: false });
+    if (data) setAnns(data as any[]);
+  }
+
+  async function postAnn() {
+    const text = annText.trim();
+    if (!text) return;
+    setAnnBusy(true);
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      // Only one announcement shows at a time, so retire the old one first
+      await supabase.from("announcements").update({ active: false }).eq("active", true);
+      const { error: err } = await supabase
+        .from("announcements")
+        .insert({ message: text.slice(0, 300), active: true, created_by: user?.id ?? null });
+      if (err) {
+        alert(err.message);
+      } else {
+        setAnnText("");
+      }
+      await loadAnns();
+    } finally {
+      setAnnBusy(false);
+    }
+  }
+
+  async function removeAnn(id: number) {
+    const { error: err } = await supabase.from("announcements").update({ active: false }).eq("id", id);
+    if (err) {
+      alert(err.message);
+      return;
+    }
+    await loadAnns();
+  }
+
   useEffect(() => {
     let timer: any;
     async function init() {
@@ -104,6 +149,7 @@ export default function ActivityPage() {
       }
 
       await loadRows();
+      await loadAnns();
       setLoading(false);
       timer = setInterval(loadRows, 30000);
     }
@@ -168,6 +214,36 @@ export default function ActivityPage() {
       </p>
 
       {error && <p className="text-sm text-red-600 border border-red-200 rounded p-3 mb-4">{error}</p>}
+
+      <div className="mb-6 border border-navy/15 rounded-lg bg-white p-4">
+        <h2 className="font-serif text-lg text-navy mb-1">Announcement</h2>
+        <p className="text-xs text-navy/60 mb-3">
+          Shows as a banner at the top for everyone. Posting a new one replaces the old one.
+        </p>
+        {anns.length > 0 && (
+          <div className="mb-3 border border-gold rounded bg-gold/10 px-3 py-2 text-sm text-navy">
+            <p>{anns[0].message}</p>
+            <button onClick={() => removeAnn(anns[0].id)} className="text-xs text-red-600 underline mt-1">
+              Remove this announcement
+            </button>
+          </div>
+        )}
+        <textarea
+          value={annText}
+          onChange={(e) => setAnnText(e.target.value)}
+          rows={2}
+          maxLength={300}
+          placeholder="Type a short announcement, for example: A new guide on Cardiology has been added."
+          className="w-full border border-navy/20 rounded px-3 py-2 text-sm mb-2"
+        />
+        <button
+          onClick={postAnn}
+          disabled={annBusy || annText.trim().length === 0}
+          className="px-3 py-1.5 rounded bg-navy text-paper text-sm disabled:opacity-50"
+        >
+          {annBusy ? "Posting…" : "Post announcement"}
+        </button>
+      </div>
 
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
