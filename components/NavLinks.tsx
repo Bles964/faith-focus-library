@@ -44,6 +44,7 @@ export default function NavLinks() {
     <nav className="flex flex-wrap justify-end gap-x-5 gap-y-1 text-sm">
       <Link href="/library" className="hover:text-gold">Browse</Link>
       <Link href="/quiz" className="hover:text-gold">Quiz</Link>
+      <Link href="/exam" className="hover:text-gold">Clinical</Link>
       {isAdmin && (
         <Link href="/upload" className="hover:text-gold">Upload</Link>
       )}
