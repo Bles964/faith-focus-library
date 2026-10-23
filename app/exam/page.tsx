@@ -9,7 +9,8 @@ type Video = {
   title: string;
   description: string | null;
   category: string;
-  file_path: string;
+  file_path: string | null;
+  youtube_id: string | null;
   created_at: string;
 };
 
@@ -24,6 +25,29 @@ const CATEGORIES = [
 ];
 
 const MAX_MB = 50;
+const ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
+// Accepts a full YouTube link (watch, youtu.be, shorts, embed, live) or the 11-character video id
+function parseYouTubeId(input: string): string | null {
+  const s = input.trim();
+  if (ID_RE.test(s)) return s;
+  try {
+    const u = new URL(s.startsWith("http") ? s : "https://" + s);
+    const host = u.hostname.replace(/^www\./, "");
+    if (host === "youtu.be") {
+      const id = u.pathname.split("/")[1] || "";
+      return ID_RE.test(id) ? id : null;
+    }
+    if (host.endsWith("youtube.com") || host.endsWith("youtube-nocookie.com")) {
+      const v = u.searchParams.get("v");
+      if (v && ID_RE.test(v)) return v;
+      const parts = u.pathname.split("/").filter(Boolean);
+      const i = parts.findIndex((p) => ["embed", "shorts", "live", "v"].includes(p));
+      if (i >= 0 && parts[i + 1] && ID_RE.test(parts[i + 1])) return parts[i + 1];
+    }
+  } catch {}
+  return null;
+}
 
 export default function ExamVideosPage() {
   const supabase = createClient();
@@ -35,11 +59,13 @@ export default function ExamVideosPage() {
   const [playing, setPlaying] = useState<{ video: Video; url: string } | null>(null);
   const [playError, setPlayError] = useState("");
 
-  // Admin upload form
+  // Admin form
   const [showForm, setShowForm] = useState(false);
+  const [mode, setMode] = useState<"youtube" | "file">("youtube");
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState(CATEGORIES[0]);
   const [description, setDescription] = useState("");
+  const [ytLink, setYtLink] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState("");
@@ -72,23 +98,68 @@ export default function ExamVideosPage() {
 
   async function play(v: Video) {
     setPlayError("");
-    const { data, error } = await supabase.storage.from("exam-videos").createSignedUrl(v.file_path, 60 * 60);
-    if (!data?.signedUrl) {
-      setPlayError(error?.message ?? "Could not open this video.");
+    if (v.youtube_id) {
+      setPlaying({ video: v, url: "" });
+    } else if (v.file_path) {
+      const { data, error } = await supabase.storage.from("exam-videos").createSignedUrl(v.file_path, 60 * 60);
+      if (!data?.signedUrl) {
+        setPlayError(error?.message ?? "Could not open this video.");
+        return;
+      }
+      setPlaying({ video: v, url: data.signedUrl });
+    } else {
+      setPlayError("This video has no file or link.");
       return;
     }
-    setPlaying({ video: v, url: data.signedUrl });
     window.scrollTo({ top: 0, behavior: "smooth" });
     logActivity("watch", { path: "/exam", docId: v.id, docTitle: v.title });
   }
 
-  async function upload() {
-    if (!file || !title.trim()) {
-      setMsg("Please add a title and choose a video.");
+  async function submit() {
+    if (!title.trim()) {
+      setMsg("Please add a title.");
+      return;
+    }
+    if (mode === "youtube") {
+      const id = parseYouTubeId(ytLink);
+      if (!id) {
+        setMsg("That does not look like a YouTube link. Copy it from the Share button in YouTube.");
+        return;
+      }
+      setUploading(true);
+      setMsg("Saving…");
+      const { data, error } = await supabase
+        .from("exam_videos")
+        .insert({
+          title: title.trim(),
+          description: description.trim() || null,
+          category,
+          youtube_id: id,
+          file_path: null,
+        })
+        .select()
+        .single();
+      if (error || !data) {
+        setMsg("Could not save the video: " + (error?.message ?? "unknown error"));
+        setUploading(false);
+        return;
+      }
+      setVideos((prev) => [data as Video, ...prev]);
+      setTitle("");
+      setDescription("");
+      setYtLink("");
+      setMsg("Added. Students can watch it now.");
+      setUploading(false);
+      return;
+    }
+
+    // Upload a file
+    if (!file) {
+      setMsg("Please choose a video.");
       return;
     }
     if (file.size > MAX_MB * 1024 * 1024) {
-      setMsg(`This video is over ${MAX_MB} MB. Compress it, or cut it into shorter clips, and try again.`);
+      setMsg(`This video is over ${MAX_MB} MB. Put it on YouTube instead, or compress it, and try again.`);
       return;
     }
     setUploading(true);
@@ -144,11 +215,14 @@ export default function ExamVideosPage() {
   }
 
   async function deleteVideo(v: Video) {
-    if (!window.confirm(`Delete "${v.title}"? This cannot be undone.`)) return;
-    const { error: sErr } = await supabase.storage.from("exam-videos").remove([v.file_path]);
-    if (sErr) {
-      alert(sErr.message);
-      return;
+    const extra = v.youtube_id ? " The video stays on YouTube." : "";
+    if (!window.confirm(`Remove "${v.title}" from the library?${extra} This cannot be undone.`)) return;
+    if (v.file_path) {
+      const { error: sErr } = await supabase.storage.from("exam-videos").remove([v.file_path]);
+      if (sErr) {
+        alert(sErr.message);
+        return;
+      }
     }
     const { error: dErr } = await supabase.from("exam_videos").delete().eq("id", v.id);
     if (dErr) {
@@ -173,6 +247,20 @@ export default function ExamVideosPage() {
   const categories = ["All", ...Array.from(new Set(videos.map((v) => v.category)))];
   const shown = videos.filter((v) => activeCategory === "All" || v.category === activeCategory);
 
+  const modeBtn = (m: "youtube" | "file", label: string) => (
+    <button
+      onClick={() => {
+        setMode(m);
+        setMsg("");
+      }}
+      className={`px-3 py-1 rounded-full text-xs border ${
+        mode === m ? "bg-navy text-paper border-navy" : "border-navy/30 text-navy/70"
+      }`}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <div>
       <h1 className="font-serif text-2xl text-navy mb-1">Clinical examination videos</h1>
@@ -180,17 +268,31 @@ export default function ExamVideosPage() {
 
       {playing && (
         <div className="mb-6 border border-gold rounded-lg bg-white p-3">
-          <video
-            key={playing.url}
-            src={playing.url}
-            controls
-            autoPlay
-            playsInline
-            controlsList="nodownload"
-            disablePictureInPicture
-            onContextMenu={(e) => e.preventDefault()}
-            className="w-full rounded bg-black"
-          />
+          {playing.video.youtube_id ? (
+            <div className="aspect-video w-full rounded overflow-hidden bg-black">
+              <iframe
+                key={playing.video.youtube_id}
+                src={`https://www.youtube-nocookie.com/embed/${playing.video.youtube_id}?rel=0&modestbranding=1&playsinline=1&autoplay=1`}
+                title={playing.video.title}
+                className="w-full h-full"
+                allow="accelerometer; autoplay; encrypted-media; picture-in-picture; fullscreen"
+                allowFullScreen
+                referrerPolicy="strict-origin-when-cross-origin"
+              />
+            </div>
+          ) : (
+            <video
+              key={playing.url}
+              src={playing.url}
+              controls
+              autoPlay
+              playsInline
+              controlsList="nodownload"
+              disablePictureInPicture
+              onContextMenu={(e) => e.preventDefault()}
+              className="w-full rounded bg-black"
+            />
+          )}
           <div className="flex items-start justify-between gap-3 mt-3">
             <div>
               <p className="text-xs uppercase tracking-wide text-gold font-medium">{playing.video.category}</p>
@@ -215,6 +317,10 @@ export default function ExamVideosPage() {
           </button>
           {showForm && (
             <div className="mt-3 space-y-2">
+              <div className="flex gap-2">
+                {modeBtn("youtube", "YouTube link")}
+                {modeBtn("file", "Upload a file")}
+              </div>
               <input
                 type="text"
                 value={title}
@@ -240,21 +346,39 @@ export default function ExamVideosPage() {
                 placeholder="Short description (optional)"
                 className="w-full border border-navy/20 rounded px-3 py-2 text-sm"
               />
-              <input
-                type="file"
-                accept="video/*"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                className="w-full text-sm"
-              />
-              <p className="text-xs text-navy/50">
-                Up to {MAX_MB} MB per video. About 2 to 3 minutes at 720p fits.
-              </p>
+              {mode === "youtube" ? (
+                <>
+                  <input
+                    type="text"
+                    value={ytLink}
+                    onChange={(e) => setYtLink(e.target.value)}
+                    placeholder="Paste the YouTube link here"
+                    className="w-full border border-navy/20 rounded px-3 py-2 text-sm"
+                  />
+                  <p className="text-xs text-navy/50">
+                    On YouTube, set the video to Unlisted and choose &quot;No, it&apos;s not made for kids&quot;. Then tap
+                    Share, then Copy link.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <input
+                    type="file"
+                    accept="video/*"
+                    onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                    className="w-full text-sm"
+                  />
+                  <p className="text-xs text-navy/50">
+                    Up to {MAX_MB} MB per video. About 2 to 3 minutes at 720p fits.
+                  </p>
+                </>
+              )}
               <button
-                onClick={upload}
+                onClick={submit}
                 disabled={uploading}
                 className="px-3 py-1.5 rounded bg-navy text-paper text-sm disabled:opacity-50"
               >
-                {uploading ? "Uploading…" : "Upload video"}
+                {uploading ? "Working…" : mode === "youtube" ? "Add video" : "Upload video"}
               </button>
               {msg && <p className="text-xs text-navy/70">{msg}</p>}
             </div>
@@ -287,6 +411,15 @@ export default function ExamVideosPage() {
           {shown.map((v) => (
             <div key={v.id} className="border border-navy/15 rounded-lg p-4 bg-white hover:border-gold transition-colors">
               <button onClick={() => play(v)} className="text-left w-full">
+                {v.youtube_id && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`https://i.ytimg.com/vi/${v.youtube_id}/hqdefault.jpg`}
+                    alt=""
+                    loading="lazy"
+                    className="w-full rounded mb-3 aspect-video object-cover bg-navy/10"
+                  />
+                )}
                 <span className="text-xs uppercase tracking-wide text-gold font-medium">{v.category}</span>
                 <h2 className="font-serif text-lg text-navy mt-1">▶ {v.title}</h2>
                 {v.description && <p className="text-sm text-navy/60 mt-1">{v.description}</p>}
