@@ -30,6 +30,7 @@ const PAGE_NAMES: Record<string, string> = {
   "/upload": "Upload",
   "/focus": "Focus",
   "/videos": "Videos",
+  "/exam": "Clinical videos",
   "/login": "Account",
 };
 
@@ -202,6 +203,7 @@ export default function ActivityPage() {
   function describe(r: Row) {
     if (r.event === "visit") return "opened the site";
     if (r.event === "read") return `read "${titleOf(r)}"`;
+    if (r.event === "watch") return `watched "${titleOf(r)}"`;
     if (r.event === "page_view") return `viewed ${PAGE_NAMES[r.path || ""] || r.path || "a page"}`;
     return r.event;
   }
