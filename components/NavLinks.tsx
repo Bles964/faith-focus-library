@@ -45,6 +45,7 @@ export default function NavLinks() {
       <Link href="/library" className="hover:text-gold">Browse</Link>
       <Link href="/quiz" className="hover:text-gold">Quiz</Link>
       <Link href="/exam" className="hover:text-gold">Clinical</Link>
+      <Link href="/cases" className="hover:text-gold">Cases</Link>
       {isAdmin && (
         <Link href="/upload" className="hover:text-gold">Upload</Link>
       )}
