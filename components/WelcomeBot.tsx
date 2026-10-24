@@ -70,6 +70,7 @@ export default function WelcomeBot() {
         "Listen: inside a guide, tap Listen from this page. It reads aloud and turns the pages for you.",
         "Quiz: pick a guide and answer its questions, then see your score.",
         "Clinical: watch examination videos, step by step.",
+        "Cases: practise reading ECGs, radiographs and clinical pictures.",
         "Account: sign in or sign out.",
       ];
 
