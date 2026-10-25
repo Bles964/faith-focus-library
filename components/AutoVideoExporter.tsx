@@ -2,6 +2,7 @@
 import { useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { createRoot } from "react-dom/client";
+import { createClient } from "@/lib/supabaseClient";
 
 type BaseStage = { label: string; narration: string };
 
@@ -11,6 +12,7 @@ type Props<T extends BaseStage> = {
   buttonLabel: string;
   fileName: string;
   voice?: string;
+  saveTitle?: string;
 };
 
 const ENGINE_SERVERS = [
@@ -20,12 +22,18 @@ const ENGINE_SERVERS = [
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+function prettyTitle(fileName: string) {
+  const t = fileName.replace(/\.mp4$/i, "").replace(/[-_]+/g, " ").trim();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
 export default function AutoVideoExporter<T extends BaseStage>({
   stages,
   StageComponent,
   buttonLabel,
   fileName,
   voice,
+  saveTitle,
 }: Props<T>) {
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState(0);
@@ -35,6 +43,11 @@ export default function AutoVideoExporter<T extends BaseStage>({
   // Kept between attempts, so a retry does not repeat finished work
   const ffmpegRef = useRef<any>(null);
   const audioCache = useRef<Map<string, Blob>>(new Map());
+  const blobRef = useRef<Blob | null>(null);
+  const [title, setTitle] = useState(() => saveTitle ?? prettyTitle(fileName));
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
 
   async function stageToPngBlob(stage: T): Promise<Blob> {
     const container = document.createElement("div");
@@ -149,6 +162,9 @@ export default function AutoVideoExporter<T extends BaseStage>({
     setBusy(true);
     setVideoUrl(null);
     setProgress(0);
+    setSaved(false);
+    setSaveMsg("");
+    blobRef.current = null;
     try {
       const ffmpeg = await getEngine();
       const { fetchFile } = await import("@ffmpeg/util");
@@ -189,6 +205,7 @@ export default function AutoVideoExporter<T extends BaseStage>({
 
       const data = await ffmpeg.readFile("output.mp4");
       const blob = new Blob([data as unknown as ArrayBuffer], { type: "video/mp4" });
+      blobRef.current = blob;
       setVideoUrl(URL.createObjectURL(blob));
       setProgress(100);
       setStatus("Done");
@@ -203,6 +220,41 @@ export default function AutoVideoExporter<T extends BaseStage>({
       }
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function saveToLibrary() {
+    if (!blobRef.current || saved) return;
+    if (!title.trim()) {
+      setSaveMsg("Please type a title first.");
+      return;
+    }
+    setSaving(true);
+    setSaveMsg("Saving…");
+    try {
+      const supabase = createClient();
+      const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`;
+      const { error: upErr } = await supabase.storage
+        .from("exam-videos")
+        .upload(path, blobRef.current, { contentType: "video/mp4", upsert: false });
+      if (upErr) throw new Error(upErr.message);
+
+      const { error: dbErr } = await supabase.from("exam_videos").insert({
+        title: title.trim(),
+        category: "Teaching videos",
+        description: null,
+        file_path: path,
+      });
+      if (dbErr) {
+        await supabase.storage.from("exam-videos").remove([path]);
+        throw new Error(dbErr.message);
+      }
+      setSaved(true);
+      setSaveMsg("Saved. Students can now watch it in the Clinical tab.");
+    } catch (e: any) {
+      setSaveMsg("Could not save: " + (e?.message || "please try again"));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -244,6 +296,41 @@ export default function AutoVideoExporter<T extends BaseStage>({
           >
             Download MP4
           </a>
+          <div style={{ marginTop: 18, paddingTop: 14, borderTop: "1px solid #2A3E5C" }}>
+            <p style={{ color: "#9AA6B8", fontSize: ".8rem", marginBottom: 6 }}>Save this video to the library</p>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              disabled={saving || saved}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid #2A3E5C",
+                background: "#0B1F3A",
+                color: "#F4F1EA",
+                marginBottom: 10,
+              }}
+            />
+            <button
+              onClick={saveToLibrary}
+              disabled={saving || saved}
+              style={{
+                background: "#D4AF37",
+                color: "#081729",
+                border: "none",
+                borderRadius: 8,
+                padding: "10px 14px",
+                fontWeight: 600,
+                cursor: saving || saved ? "default" : "pointer",
+                opacity: saving || saved ? 0.6 : 1,
+              }}
+            >
+              {saved ? "Saved" : saving ? "Saving..." : "Save to library"}
+            </button>
+            {saveMsg && <p style={{ color: "#9AA6B8", fontSize: ".85rem", marginTop: 8 }}>{saveMsg}</p>}
+          </div>
         </>
       )}
     </div>
