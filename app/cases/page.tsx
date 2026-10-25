@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabaseClient";
 import { logActivity } from "@/lib/activity";
 
+type View = { path: string; label: string };
+
 type Case = {
   id: string;
   created_at: string;
@@ -14,10 +16,20 @@ type Case = {
   diagnosis: string | null;
   notes: string | null;
   image_path: string;
+  view_label: string | null;
+  extra_images: View[] | null;
 };
 
-const CATEGORIES = ["ECG", "Radiograph", "Clinical picture"];
+const CATEGORIES = ["ECG", "Radiograph", "CT / MRI", "Clinical picture"];
+const VIEW_LABELS = ["PA", "AP", "Lateral", "Oblique", "Decubitus", "Axial", "Coronal", "Sagittal", "Other"];
 const MAX_MB = 10;
+const MAX_EXTRA = 5;
+
+function viewsOf(c: Case): View[] {
+  const first: View = { path: c.image_path, label: c.view_label || "Main" };
+  const extras = Array.isArray(c.extra_images) ? c.extra_images : [];
+  return [first, ...extras];
+}
 
 export default function CasesPage() {
   const supabase = createClient();
@@ -30,11 +42,13 @@ export default function CasesPage() {
 
   // Open case
   const [current, setCurrent] = useState<Case | null>(null);
+  const [viewIdx, setViewIdx] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const [zoomed, setZoomed] = useState(false);
 
   // Admin form
   const [showForm, setShowForm] = useState(false);
+  const [formKey, setFormKey] = useState(0);
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState(CATEGORIES[0]);
   const [history, setHistory] = useState("");
@@ -42,9 +56,21 @@ export default function CasesPage() {
   const [diagnosis, setDiagnosis] = useState("");
   const [notes, setNotes] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [mainLabel, setMainLabel] = useState("");
+  const [extras, setExtras] = useState<{ file: File | null; label: string }[]>([]);
   const [consent, setConsent] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState("");
+
+  async function signPaths(paths: string[]) {
+    if (paths.length === 0) return;
+    const { data: signed } = await supabase.storage.from("case-images").createSignedUrls(paths, 60 * 60);
+    if (signed) {
+      const m: Record<string, string> = {};
+      for (const s of signed) if (s.path && s.signedUrl) m[s.path] = s.signedUrl;
+      setUrls((prev) => ({ ...prev, ...m }));
+    }
+  }
 
   useEffect(() => {
     async function load() {
@@ -66,13 +92,9 @@ export default function CasesPage() {
           .order("created_at", { ascending: false });
         if (data && data.length > 0) {
           setCases(data as Case[]);
-          const paths = (data as Case[]).map((c) => c.image_path);
-          const { data: signed } = await supabase.storage.from("case-images").createSignedUrls(paths, 60 * 60);
-          if (signed) {
-            const m: Record<string, string> = {};
-            for (const s of signed) if (s.path && s.signedUrl) m[s.path] = s.signedUrl;
-            setUrls(m);
-          }
+          const paths: string[] = [];
+          for (const c of data as Case[]) for (const v of viewsOf(c)) paths.push(v.path);
+          await signPaths(paths);
         }
       }
       setLoading(false);
@@ -85,6 +107,7 @@ export default function CasesPage() {
 
   function openCase(c: Case) {
     setCurrent(c);
+    setViewIdx(0);
     setRevealed(false);
     setZoomed(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -104,30 +127,55 @@ export default function CasesPage() {
       return;
     }
     if (!file) {
-      setMsg("Please choose an image.");
+      setMsg("Please choose the main image.");
       return;
     }
     if (!consent) {
-      setMsg("Please confirm the image is anonymous and that you may use it.");
+      setMsg("Please confirm the images are anonymous and that you may use them.");
       return;
     }
-    if (file.size > MAX_MB * 1024 * 1024) {
-      setMsg(`This image is over ${MAX_MB} MB. Please use a smaller one.`);
-      return;
+    const extraFiles = extras.filter((x) => x.file);
+    const all = [file, ...extraFiles.map((x) => x.file as File)];
+    for (const f of all) {
+      if (f.size > MAX_MB * 1024 * 1024) {
+        setMsg(`"${f.name}" is over ${MAX_MB} MB. Please use a smaller image.`);
+        return;
+      }
     }
+
     setUploading(true);
     setMsg("Uploading…");
 
-    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-    const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const uploaded: string[] = [];
+    async function uploadOne(f: File): Promise<string | null> {
+      const ext = (f.name.split(".").pop() || "jpg").toLowerCase();
+      const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const { error } = await supabase.storage
+        .from("case-images")
+        .upload(path, f, { contentType: f.type || "image/jpeg", upsert: false });
+      if (error) {
+        setMsg("Upload failed: " + error.message);
+        return null;
+      }
+      uploaded.push(path);
+      return path;
+    }
 
-    const { error: upErr } = await supabase.storage
-      .from("case-images")
-      .upload(path, file, { contentType: file.type || "image/jpeg", upsert: false });
-    if (upErr) {
-      setMsg("Upload failed: " + upErr.message);
+    const mainPath = await uploadOne(file);
+    if (!mainPath) {
       setUploading(false);
       return;
+    }
+
+    const extraViews: View[] = [];
+    for (let i = 0; i < extraFiles.length; i++) {
+      const p = await uploadOne(extraFiles[i].file as File);
+      if (!p) {
+        await supabase.storage.from("case-images").remove(uploaded);
+        setUploading(false);
+        return;
+      }
+      extraViews.push({ path: p, label: extraFiles[i].label || `View ${i + 2}` });
     }
 
     const { data, error: dbErr } = await supabase
@@ -139,20 +187,21 @@ export default function CasesPage() {
         findings: findings.trim() || null,
         diagnosis: diagnosis.trim() || null,
         notes: notes.trim() || null,
-        image_path: path,
+        image_path: mainPath,
+        view_label: mainLabel || null,
+        extra_images: extraViews,
       })
       .select()
       .single();
 
     if (dbErr || !data) {
-      await supabase.storage.from("case-images").remove([path]);
+      await supabase.storage.from("case-images").remove(uploaded);
       setMsg("Could not save the case: " + (dbErr?.message ?? "unknown error"));
       setUploading(false);
       return;
     }
 
-    const { data: signed } = await supabase.storage.from("case-images").createSignedUrl(path, 60 * 60);
-    if (signed?.signedUrl) setUrls((prev) => ({ ...prev, [path]: signed.signedUrl }));
+    await signPaths(uploaded);
     setCases((prev) => [data as Case, ...prev]);
     setTitle("");
     setHistory("");
@@ -160,7 +209,10 @@ export default function CasesPage() {
     setDiagnosis("");
     setNotes("");
     setFile(null);
+    setMainLabel("");
+    setExtras([]);
     setConsent(false);
+    setFormKey((k) => k + 1);
     setMsg("Added. Students can practise it now.");
     setUploading(false);
   }
@@ -177,8 +229,9 @@ export default function CasesPage() {
   }
 
   async function deleteCase(c: Case) {
-    if (!window.confirm(`Delete "${c.title}"? This cannot be undone.`)) return;
-    const { error: sErr } = await supabase.storage.from("case-images").remove([c.image_path]);
+    if (!window.confirm(`Delete "${c.title}" and all its views? This cannot be undone.`)) return;
+    const paths = viewsOf(c).map((v) => v.path);
+    const { error: sErr } = await supabase.storage.from("case-images").remove(paths);
     if (sErr) {
       alert(sErr.message);
       return;
@@ -204,6 +257,8 @@ export default function CasesPage() {
   }
 
   const input = "w-full border border-navy/20 rounded px-3 py-2 text-sm";
+  const views = current ? viewsOf(current) : [];
+  const activeView = views[Math.min(viewIdx, Math.max(views.length - 1, 0))];
 
   return (
     <div>
@@ -219,24 +274,43 @@ export default function CasesPage() {
         )}
       </div>
       <p className="text-sm text-navy/60 mb-5">
-        Practise reading ECGs, radiographs and clinical pictures. Look first, then reveal the interpretation.
+        Practise reading ECGs, radiographs, scans and clinical pictures. Look first, then reveal the interpretation.
       </p>
 
-      {current && (
+      {current && activeView && (
         <div className="mb-6 border border-gold rounded-lg bg-white p-3">
           <p className="text-xs uppercase tracking-wide text-gold font-medium">{current.category}</p>
           <h2 className="font-serif text-lg text-navy mb-2">{current.title}</h2>
+
+          {views.length > 1 && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {views.map((v, i) => (
+                <button
+                  key={v.path}
+                  onClick={() => {
+                    setViewIdx(i);
+                    setZoomed(false);
+                  }}
+                  className={`text-xs px-3 py-1 rounded-full border ${
+                    i === viewIdx ? "bg-navy text-paper border-navy" : "border-navy/30 text-navy/70"
+                  }`}
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+          )}
 
           <div
             className="overflow-auto rounded bg-black/5 border border-navy/10"
             style={{ maxHeight: zoomed ? "70vh" : undefined }}
             onContextMenu={(e) => e.preventDefault()}
           >
-            {urls[current.image_path] ? (
+            {urls[activeView.path] ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={urls[current.image_path]}
-                alt={current.title}
+                src={urls[activeView.path]}
+                alt={`${current.title} (${activeView.label})`}
                 draggable={false}
                 style={{
                   width: zoomed ? "220%" : "100%",
@@ -250,9 +324,12 @@ export default function CasesPage() {
               <p className="p-6 text-sm text-navy/50">Image could not be loaded.</p>
             )}
           </div>
-          <button onClick={() => setZoomed((z) => !z)} className="text-xs text-navy/60 underline mt-2">
-            {zoomed ? "Zoom out" : "🔍 Zoom in"}
-          </button>
+          <div className="flex items-center justify-between mt-2">
+            <button onClick={() => setZoomed((z) => !z)} className="text-xs text-navy/60 underline">
+              {zoomed ? "Zoom out" : "🔍 Zoom in"}
+            </button>
+            {activeView.label !== "Main" && <span className="text-xs text-navy/50">View: {activeView.label}</span>}
+          </div>
 
           {current.history && (
             <div className="mt-3">
@@ -263,9 +340,7 @@ export default function CasesPage() {
 
           {!revealed ? (
             <div className="mt-4 border border-navy/15 rounded p-3 bg-paper">
-              <p className="text-sm text-navy mb-2">
-                Think first: what do you see, and what is your diagnosis?
-              </p>
+              <p className="text-sm text-navy mb-2">Think first: what do you see, and what is your diagnosis?</p>
               <button onClick={() => setRevealed(true)} className="px-3 py-1.5 rounded bg-navy text-paper text-sm">
                 Show interpretation
               </button>
@@ -318,11 +393,7 @@ export default function CasesPage() {
                 placeholder="Title, for example: Chest pain in a 55-year-old man"
                 className={input}
               />
-              <select
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                className={`${input} bg-white`}
-              >
+              <select value={category} onChange={(e) => setCategory(e.target.value)} className={`${input} bg-white`}>
                 {CATEGORIES.map((c) => (
                   <option key={c} value={c}>
                     {c}
@@ -357,13 +428,72 @@ export default function CasesPage() {
                 placeholder="Teaching points (optional)"
                 className={input}
               />
-              <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                className="w-full text-sm"
-              />
-              <p className="text-xs text-navy/50">JPEG, PNG or WebP, up to {MAX_MB} MB.</p>
+
+              <div className="border border-navy/10 rounded p-2 space-y-2">
+                <p className="text-xs text-navy/60">Main image</p>
+                <select value={mainLabel} onChange={(e) => setMainLabel(e.target.value)} className={`${input} bg-white`}>
+                  <option value="">View (optional), for example PA</option>
+                  {VIEW_LABELS.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  key={`main-${formKey}`}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                  className="w-full text-sm"
+                />
+              </div>
+
+              {extras.map((x, i) => (
+                <div key={`${formKey}-${i}`} className="border border-navy/10 rounded p-2 space-y-2">
+                  <div className="flex gap-2 items-center">
+                    <select
+                      value={x.label}
+                      onChange={(e) =>
+                        setExtras((prev) => prev.map((p, j) => (j === i ? { ...p, label: e.target.value } : p)))
+                      }
+                      className={`${input} bg-white`}
+                    >
+                      <option value="">View (optional)</option>
+                      {VIEW_LABELS.map((l) => (
+                        <option key={l} value={l}>
+                          {l}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => setExtras((prev) => prev.filter((_, j) => j !== i))}
+                      className="text-xs text-red-600 underline shrink-0"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] ?? null;
+                      setExtras((prev) => prev.map((p, j) => (j === i ? { ...p, file: f } : p)));
+                    }}
+                    className="w-full text-sm"
+                  />
+                </div>
+              ))}
+
+              {extras.length < MAX_EXTRA && (
+                <button
+                  onClick={() => setExtras((prev) => [...prev, { file: null, label: "" }])}
+                  className="text-xs text-navy/70 underline"
+                >
+                  + Add another view
+                </button>
+              )}
+              <p className="text-xs text-navy/50">JPEG, PNG or WebP, up to {MAX_MB} MB each.</p>
+
               <label className="flex items-start gap-2 text-xs text-navy/70">
                 <input
                   type="checkbox"
@@ -372,8 +502,8 @@ export default function CasesPage() {
                   className="mt-0.5"
                 />
                 <span>
-                  I confirm the image has no name, hospital number, date of birth, face or other identifying detail,
-                  and I have permission to use it.
+                  I confirm the images have no name, hospital number, date of birth, face or other identifying
+                  detail, and I have permission to use them.
                 </span>
               </label>
               <button
@@ -395,9 +525,7 @@ export default function CasesPage() {
             key={c}
             onClick={() => setActiveCategory(c)}
             className={`text-sm px-3 py-1 rounded-full border ${
-              activeCategory === c
-                ? "bg-navy text-paper border-navy"
-                : "border-navy/30 text-navy/70 hover:border-navy"
+              activeCategory === c ? "bg-navy text-paper border-navy" : "border-navy/30 text-navy/70 hover:border-navy"
             }`}
           >
             {c}
@@ -411,40 +539,53 @@ export default function CasesPage() {
         <p className="text-sm text-navy/50">No cases yet. Check back soon.</p>
       ) : (
         <div className="grid grid-cols-2 gap-3">
-          {shown.map((c) => (
-            <div key={c.id} className="border border-navy/15 rounded-lg bg-white overflow-hidden hover:border-gold transition-colors">
-              <button onClick={() => openCase(c)} className="text-left w-full">
-                {urls[c.image_path] ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={urls[c.image_path]}
-                    alt=""
-                    loading="lazy"
-                    draggable={false}
-                    onContextMenu={(e) => e.preventDefault()}
-                    className="w-full aspect-square object-cover bg-navy/10"
-                    style={{ WebkitTouchCallout: "none" }}
-                  />
-                ) : (
-                  <div className="w-full aspect-square bg-navy/10" />
+          {shown.map((c) => {
+            const count = viewsOf(c).length;
+            return (
+              <div
+                key={c.id}
+                className="border border-navy/15 rounded-lg bg-white overflow-hidden hover:border-gold transition-colors"
+              >
+                <button onClick={() => openCase(c)} className="text-left w-full">
+                  <div className="relative">
+                    {urls[c.image_path] ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={urls[c.image_path]}
+                        alt=""
+                        loading="lazy"
+                        draggable={false}
+                        onContextMenu={(e) => e.preventDefault()}
+                        className="w-full aspect-square object-cover bg-navy/10"
+                        style={{ WebkitTouchCallout: "none" }}
+                      />
+                    ) : (
+                      <div className="w-full aspect-square bg-navy/10" />
+                    )}
+                    {count > 1 && (
+                      <span className="absolute bottom-2 right-2 text-[10px] bg-navy text-paper rounded-full px-2 py-0.5">
+                        {count} views
+                      </span>
+                    )}
+                  </div>
+                  <div className="p-3">
+                    <span className="text-[10px] uppercase tracking-wide text-gold font-medium">{c.category}</span>
+                    <h2 className="font-serif text-sm text-navy mt-0.5">{c.title}</h2>
+                  </div>
+                </button>
+                {isAdmin && (
+                  <div className="flex gap-3 px-3 pb-3">
+                    <button onClick={() => renameCase(c)} className="text-xs text-navy/60 hover:text-gold underline">
+                      Rename
+                    </button>
+                    <button onClick={() => deleteCase(c)} className="text-xs text-red-600 hover:text-red-800 underline">
+                      Delete
+                    </button>
+                  </div>
                 )}
-                <div className="p-3">
-                  <span className="text-[10px] uppercase tracking-wide text-gold font-medium">{c.category}</span>
-                  <h2 className="font-serif text-sm text-navy mt-0.5">{c.title}</h2>
-                </div>
-              </button>
-              {isAdmin && (
-                <div className="flex gap-3 px-3 pb-3">
-                  <button onClick={() => renameCase(c)} className="text-xs text-navy/60 hover:text-gold underline">
-                    Rename
-                  </button>
-                  <button onClick={() => deleteCase(c)} className="text-xs text-red-600 hover:text-red-800 underline">
-                    Delete
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
