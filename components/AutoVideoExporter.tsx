@@ -164,7 +164,7 @@ export default function AutoVideoExporter<T extends BaseStage>({
         const pngBlob = await stageToPngBlob(stage);
 
         const pngName = `frame${idx}.png`;
-        const audioName = `audio${idx}.mp3`;
+        const audioName = `audio${idx}.${audioBlob.type.includes("wav") ? "wav" : "mp3"}`;
         await ffmpeg.writeFile(pngName, await fetchFile(pngBlob));
         await ffmpeg.writeFile(audioName, await fetchFile(audioBlob));
 
