@@ -21,6 +21,7 @@ const CATEGORIES = [
   "Abdominal",
   "Neurological",
   "Musculoskeletal",
+  "Teaching videos",
   "Other",
 ];
 
@@ -263,8 +264,8 @@ export default function ExamVideosPage() {
 
   return (
     <div>
-      <h1 className="font-serif text-2xl text-navy mb-1">Clinical examination videos</h1>
-      <p className="text-sm text-navy/60 mb-5">Watch how each examination is done, step by step.</p>
+      <h1 className="font-serif text-2xl text-navy mb-1">Clinical and teaching videos</h1>
+      <p className="text-sm text-navy/60 mb-5">Watch examinations step by step, and short teaching videos.</p>
 
       {playing && (
         <div className="mb-6 border border-gold rounded-lg bg-white p-3">
