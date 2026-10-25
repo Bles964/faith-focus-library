@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabaseClient";
 import { logActivity } from "@/lib/activity";
 
@@ -24,6 +24,24 @@ const CATEGORIES = ["ECG", "Radiograph", "CT / MRI", "Clinical picture"];
 const VIEW_LABELS = ["PA", "AP", "Lateral", "Oblique", "Decubitus", "Axial", "Coronal", "Sagittal", "Other"];
 const MAX_MB = 10;
 const MAX_EXTRA = 5;
+
+// Cut text into short pieces so the phone voice does not stop partway
+function splitForSpeech(text: string): string[] {
+  const sentences = text.replace(/\s+/g, " ").match(/[^.!?]+[.!?]*/g) || [text];
+  const chunks: string[] = [];
+  for (const sentence of sentences) {
+    let rest = sentence.trim();
+    while (rest.length > 180) {
+      let cut = rest.lastIndexOf(", ", 180);
+      if (cut < 60) cut = rest.lastIndexOf(" ", 180);
+      if (cut < 60) cut = 180;
+      chunks.push(rest.slice(0, cut + 1).trim());
+      rest = rest.slice(cut + 1).trim();
+    }
+    if (rest) chunks.push(rest);
+  }
+  return chunks;
+}
 
 function viewsOf(c: Case): View[] {
   const first: View = { path: c.image_path, label: c.view_label || "Main" };
@@ -61,6 +79,79 @@ export default function CasesPage() {
   const [consent, setConsent] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState("");
+
+  // Reading a case aloud
+  const [speaking, setSpeaking] = useState(false);
+  const speakTokenRef = useRef(0);
+  const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  function stopSpeech() {
+    speakTokenRef.current++;
+    try {
+      speechSynthesis.cancel();
+    } catch {}
+    setSpeaking(false);
+  }
+
+  function speakText(text: string) {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      alert("This browser cannot read aloud.");
+      return;
+    }
+    if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+    const chunks = splitForSpeech(text);
+    const token = ++speakTokenRef.current;
+    setSpeaking(true);
+
+    const speakAt = (i: number) => {
+      if (token !== speakTokenRef.current) return;
+      if (i >= chunks.length) {
+        setSpeaking(false);
+        return;
+      }
+      const u = new SpeechSynthesisUtterance(chunks[i]);
+      u.onend = () => speakAt(i + 1);
+      u.onerror = (e: any) => {
+        if (token !== speakTokenRef.current) return;
+        if (e?.error === "canceled" || e?.error === "interrupted") return;
+        speakAt(i + 1);
+      };
+      utterRef.current = u; // keep a reference so the phone does not drop the voice
+      speechSynthesis.speak(u);
+    };
+    speakAt(0);
+  }
+
+  function toggleSpeech() {
+    if (speaking) {
+      stopSpeech();
+      return;
+    }
+    if (!current) return;
+    const end = (t: string | null) => (t ? (/[.!?]$/.test(t.trim()) ? t.trim() : t.trim() + ".") : "");
+    let text: string;
+    if (!revealed) {
+      text =
+        `${end(current.title)} ` +
+        (current.history ? `Clinical scenario. ${end(current.history)} ` : "") +
+        "Think first. What do you see, and what is your diagnosis?";
+    } else {
+      text =
+        (current.findings ? `What you should see. ${end(current.findings)} ` : "") +
+        (current.diagnosis ? `The diagnosis is ${end(current.diagnosis)} ` : "") +
+        (current.notes ? `Teaching points. ${end(current.notes)}` : "");
+      if (!text.trim()) text = "There is no interpretation written for this case yet.";
+    }
+    speakText(text);
+  }
+
+  useEffect(() => {
+    return () => {
+      try {
+        speechSynthesis.cancel();
+      } catch {}
+    };
+  }, []);
 
   async function signPaths(paths: string[]) {
     if (paths.length === 0) return;
@@ -106,6 +197,7 @@ export default function CasesPage() {
   const shown = cases.filter((c) => activeCategory === "All" || c.category === activeCategory);
 
   function openCase(c: Case) {
+    stopSpeech();
     setCurrent(c);
     setViewIdx(0);
     setRevealed(false);
@@ -331,6 +423,13 @@ export default function CasesPage() {
             {activeView.label !== "Main" && <span className="text-xs text-navy/50">View: {activeView.label}</span>}
           </div>
 
+          <button
+            onClick={toggleSpeech}
+            className="mt-3 px-3 py-1.5 rounded border border-navy/30 text-sm text-navy/80 hover:border-gold"
+          >
+            {speaking ? "⏹ Stop" : revealed ? "🔊 Read the interpretation" : "🔊 Read the scenario"}
+          </button>
+
           {current.history && (
             <div className="mt-3">
               <p className="text-xs uppercase tracking-wide text-navy/50 mb-1">Clinical scenario</p>
@@ -341,7 +440,13 @@ export default function CasesPage() {
           {!revealed ? (
             <div className="mt-4 border border-navy/15 rounded p-3 bg-paper">
               <p className="text-sm text-navy mb-2">Think first: what do you see, and what is your diagnosis?</p>
-              <button onClick={() => setRevealed(true)} className="px-3 py-1.5 rounded bg-navy text-paper text-sm">
+              <button
+                onClick={() => {
+                  stopSpeech();
+                  setRevealed(true);
+                }}
+                className="px-3 py-1.5 rounded bg-navy text-paper text-sm"
+              >
                 Show interpretation
               </button>
             </div>
@@ -372,7 +477,13 @@ export default function CasesPage() {
             <button onClick={randomCase} className="text-xs text-navy/60 hover:text-gold underline">
               Next case
             </button>
-            <button onClick={() => setCurrent(null)} className="text-xs text-navy/60 hover:text-gold underline">
+            <button
+              onClick={() => {
+                stopSpeech();
+                setCurrent(null);
+              }}
+              className="text-xs text-navy/60 hover:text-gold underline"
+            >
               Close
             </button>
           </div>
