@@ -4,117 +4,143 @@ import { EdgeTTS } from "edge-tts-universal";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const DEFAULT_VOICE = "en-US-AriaNeural";
-const TIMEOUT_MS = 15000;
+// Google's speech models, tried in order. Names can change, so a second one is listed.
+const GEMINI_TTS_MODELS = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"];
+const GEMINI_VOICES = ["Kore", "Puck", "Charon", "Fenrir", "Aoede", "Leda", "Zephyr"];
 
-async function synth(text: string, voice: string): Promise<ArrayBuffer> {
-  const tts = new EdgeTTS(text, voice);
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)} seconds`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
+  });
+}
 
-  const result = await Promise.race([
-    tts.synthesize(),
-    new Promise<never>((_, reject) => {
-      setTimeout(
-        () => reject(new Error("Voice service timed out after 15 seconds")),
-        TIMEOUT_MS
+// Google returns raw audio, so wrap it as a WAV file that browsers and ffmpeg can play
+function pcmToWav(pcm: Buffer, sampleRate: number): Buffer {
+  const channels = 1;
+  const bits = 16;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE((sampleRate * channels * bits) / 8, 28);
+  header.writeUInt16LE((channels * bits) / 8, 32);
+  header.writeUInt16LE(bits, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+async function geminiSpeech(text: string, voice: string | undefined, errors: string[]): Promise<Buffer | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    errors.push("Google voice: GEMINI_API_KEY is missing");
+    return null;
+  }
+  const voiceName = voice && GEMINI_VOICES.includes(voice) ? voice : "Kore";
+
+  for (const model of GEMINI_TTS_MODELS) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-goog-api-key": apiKey },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text }] }],
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
+            },
+          }),
+          signal: AbortSignal.timeout(35000),
+        }
       );
-    }),
-  ]);
-
-  if (!result?.audio) {
-    throw new Error("Voice service returned no audio");
-  }
-
-  const arrayBuffer = await result.audio.arrayBuffer();
-
-  if (arrayBuffer.byteLength === 0) {
-    throw new Error("Voice service returned empty audio");
-  }
-
-  return arrayBuffer;
-}
-
-function errorResponse(error: unknown) {
-  const message =
-    error instanceof Error ? error.message : "Voice generation failed";
-
-  return NextResponse.json(
-    { error: message },
-    {
-      status: 500,
-      headers: { "Cache-Control": "no-store" },
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        errors.push(`${model}: HTTP ${res.status} ${t.slice(0, 80)}`);
+        continue;
+      }
+      const data = await res.json();
+      const part = data?.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData?.data);
+      if (!part) {
+        errors.push(`${model}: no audio returned`);
+        continue;
+      }
+      const mime: string = part.inlineData.mimeType || "";
+      const rateMatch = mime.match(/rate=(\d+)/);
+      const rate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
+      const pcm = Buffer.from(part.inlineData.data, "base64");
+      return pcmToWav(pcm, rate);
+    } catch (e: any) {
+      errors.push(`${model}: ${e?.name === "TimeoutError" ? "timed out" : e?.message || "failed"}`);
     }
-  );
+  }
+  return null;
 }
 
-// GET: Test the voice service in your browser.
+async function edgeSpeech(text: string, voice: string | undefined, errors: string[]): Promise<ArrayBuffer | null> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const tts = new EdgeTTS(text, voice && voice.includes("Neural") ? voice : "en-US-AriaNeural");
+      const result = await withTimeout(tts.synthesize(), 25000, "Microsoft voice");
+      const audioData: any = result.audio;
+      return typeof audioData.arrayBuffer === "function" ? await audioData.arrayBuffer() : audioData;
+    } catch (e: any) {
+      errors.push(`Microsoft voice: ${e?.message || "failed"}`);
+    }
+  }
+  return null;
+}
+
+async function speak(text: string, voice: string | undefined) {
+  const errors: string[] = [];
+
+  const wav = await geminiSpeech(text, voice, errors);
+  if (wav) {
+    return new NextResponse(new Uint8Array(wav), { headers: { "Content-Type": "audio/wav" } });
+  }
+
+  const mp3 = await edgeSpeech(text, voice, errors);
+  if (mp3) {
+    return new NextResponse(mp3, { headers: { "Content-Type": "audio/mpeg" } });
+  }
+
+  return NextResponse.json({ error: "No voice service answered. " + errors.join(" | ") }, { status: 500 });
+}
+
+// Open /api/narrate-free in a browser to test the voice. It plays a short sentence,
+// or shows the exact reasons if no voice service answers.
 export async function GET(req: NextRequest) {
   const text =
-    new URL(req.url).searchParams.get("text") ||
-    "Testing the voice. One, two, three.";
-
-  try {
-    const audio = await synth(text.slice(0, 300), DEFAULT_VOICE);
-
-    return new NextResponse(audio, {
-      headers: {
-        "Content-Type": "audio/mpeg",
-        "Content-Length": String(audio.byteLength),
-        "Cache-Control": "no-store",
-      },
-    });
-  } catch (error) {
-    return errorResponse(error);
-  }
+    new URL(req.url).searchParams.get("text") || "Testing the voice. One, two, three.";
+  return speak(text.slice(0, 300), undefined);
 }
 
-// POST: Generate narration for the PDF reader and videos.
 export async function POST(req: NextRequest) {
-  let body: unknown;
-
+  let body: any;
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json(
-      { error: "Invalid request body" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
-
-  const { text, voice } = (body ?? {}) as {
-    text?: string;
-    voice?: string;
-  };
-
-  if (typeof text !== "string" || !text.trim()) {
-    return NextResponse.json(
-      { error: "Missing text to narrate" },
-      { status: 400 }
-    );
+  const { text, voice } = body ?? {};
+  if (!text || typeof text !== "string") {
+    return NextResponse.json({ error: "Missing text" }, { status: 400 });
   }
-
-  if (text.length > 10000) {
-    return NextResponse.json(
-      { error: "Text is too long. Please narrate a smaller section." },
-      { status: 413 }
-    );
-  }
-
-  try {
-    const audio = await synth(
-      text,
-      typeof voice === "string" && voice.trim()
-        ? voice
-        : DEFAULT_VOICE
-    );
-
-    return new NextResponse(audio, {
-      headers: {
-        "Content-Type": "audio/mpeg",
-        "Content-Length": String(audio.byteLength),
-        "Cache-Control": "no-store",
-      },
-    });
-  } catch (error) {
-    return errorResponse(error);
-  }
+  return speak(text, voice);
 }
