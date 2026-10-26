@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { createRoot } from "react-dom/client";
 import { createClient } from "@/lib/supabaseClient";
@@ -84,6 +84,33 @@ export default function AutoVideoExporter<T extends BaseStage>({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef(saveTitle ?? prettyTitle(fileName));
+  const titleSourceRef = useRef<"heading" | "fallback" | "edited">(saveTitle ? "heading" : "fallback");
+  const savedRef = useRef(false);
+  const [autoSave, setAutoSave] = useState(true);
+  const autoSaveRef = useRef(true);
+
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("ffl-autosave-videos") === "0") {
+        setAutoSave(false);
+        autoSaveRef.current = false;
+      }
+    } catch {}
+    // Use the heading above the button as the video's name, for example "Ophthalmology 1: Cataract"
+    if (!saveTitle) {
+      const prev = rootRef.current?.previousElementSibling;
+      const t = prev && prev.tagName === "P" ? (prev.textContent || "").trim() : "";
+      if (t) {
+        titleRef.current = t;
+        titleSourceRef.current = "heading";
+        setTitle(t);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function stageToPngBlob(stage: T): Promise<Blob> {
     const container = document.createElement("div");
@@ -221,6 +248,7 @@ export default function AutoVideoExporter<T extends BaseStage>({
     setVideoUrl(null);
     setProgress(0);
     setSaved(false);
+    savedRef.current = false;
     setSaveMsg("");
     blobRef.current = null;
     try {
@@ -267,6 +295,7 @@ export default function AutoVideoExporter<T extends BaseStage>({
       setVideoUrl(URL.createObjectURL(blob));
       setProgress(100);
       setStatus("Done");
+      if (autoSaveRef.current) void persist(true);
     } catch (e: any) {
       const msg: string = e?.message || "Something went wrong";
       if (/load failed|failed to fetch|network/i.test(msg)) {
@@ -282,34 +311,90 @@ export default function AutoVideoExporter<T extends BaseStage>({
     }
   }
 
-  async function saveToLibrary() {
-    if (!blobRef.current || saved) return;
-    if (!title.trim()) {
-      setSaveMsg("Please type a title first.");
-      return;
-    }
+  async function persist(auto: boolean) {
+    const blob = blobRef.current;
+    if (!blob || savedRef.current) return;
     setSaving(true);
-    setSaveMsg("Saving…");
+    setSaveMsg(auto ? "Saving to the library…" : "Saving…");
     try {
       const supabase = createClient();
+
+      // Automatic saving is only for the site admin
+      if (auto) {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        let isAdmin = false;
+        if (user) {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("is_admin")
+            .eq("id", user.id)
+            .single();
+          isAdmin = profile?.is_admin === true;
+        }
+        if (!isAdmin) {
+          setSaveMsg("");
+          return;
+        }
+      }
+
+      let name = titleRef.current.trim();
+      if (!name) throw new Error("Please type a title first.");
+      if (auto && titleSourceRef.current === "fallback") {
+        name += ` (${new Date().toLocaleDateString()})`;
+      }
+
       const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`;
       const { error: upErr } = await supabase.storage
         .from("exam-videos")
-        .upload(path, blobRef.current, { contentType: "video/mp4", upsert: false });
+        .upload(path, blob, { contentType: "video/mp4", upsert: false });
       if (upErr) throw new Error(upErr.message);
 
-      const { error: dbErr } = await supabase.from("exam_videos").insert({
-        title: title.trim(),
-        category: "Teaching videos",
-        description: null,
-        file_path: path,
-      });
-      if (dbErr) {
-        await supabase.storage.from("exam-videos").remove([path]);
-        throw new Error(dbErr.message);
+      // Building the same video again replaces the saved copy instead of adding a duplicate
+      let replaced = false;
+      if (titleSourceRef.current === "heading") {
+        const { data: existing } = await supabase
+          .from("exam_videos")
+          .select("id,file_path")
+          .eq("title", name)
+          .eq("category", "Teaching videos")
+          .limit(1);
+        const old = existing && existing.length > 0 ? existing[0] : null;
+        if (old) {
+          const { error: updErr } = await supabase
+            .from("exam_videos")
+            .update({ file_path: path })
+            .eq("id", old.id);
+          if (updErr) {
+            await supabase.storage.from("exam-videos").remove([path]);
+            throw new Error(updErr.message);
+          }
+          if (old.file_path) await supabase.storage.from("exam-videos").remove([old.file_path]);
+          replaced = true;
+        }
       }
+
+      if (!replaced) {
+        const { error: dbErr } = await supabase.from("exam_videos").insert({
+          title: name,
+          category: "Teaching videos",
+          description: null,
+          file_path: path,
+        });
+        if (dbErr) {
+          await supabase.storage.from("exam-videos").remove([path]);
+          throw new Error(dbErr.message);
+        }
+      }
+
+      savedRef.current = true;
       setSaved(true);
-      setSaveMsg("Saved. Students can now watch it in the Clinical tab.");
+      setSaveMsg(
+        replaced
+          ? "Updated the saved video in the library."
+          : "Saved to the library. Students can watch it in the Clinical tab."
+      );
     } catch (e: any) {
       setSaveMsg("Could not save: " + (e?.message || "please try again"));
     } finally {
@@ -317,8 +402,12 @@ export default function AutoVideoExporter<T extends BaseStage>({
     }
   }
 
+  async function saveToLibrary() {
+    await persist(false);
+  }
+
   return (
-    <div style={{ maxWidth: 420, margin: "0 auto", color: "#F4F1EA" }}>
+    <div ref={rootRef} style={{ maxWidth: 420, margin: "0 auto", color: "#F4F1EA" }}>
       <button
         onClick={build}
         disabled={busy}
@@ -335,6 +424,22 @@ export default function AutoVideoExporter<T extends BaseStage>({
       >
         {busy ? "Building video..." : buttonLabel}
       </button>
+      <label
+        style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, color: "#9AA6B8", fontSize: ".8rem" }}
+      >
+        <input
+          type="checkbox"
+          checked={autoSave}
+          onChange={(e) => {
+            setAutoSave(e.target.checked);
+            autoSaveRef.current = e.target.checked;
+            try {
+              localStorage.setItem("ffl-autosave-videos", e.target.checked ? "1" : "0");
+            } catch {}
+          }}
+        />
+        Save to the library automatically when ready
+      </label>
       {status && (
         <p style={{ color: "#9AA6B8", fontSize: ".85rem", marginTop: 10 }}>
           {status} {progress > 0 && progress < 100 && `(${progress}%)`}
@@ -360,7 +465,11 @@ export default function AutoVideoExporter<T extends BaseStage>({
             <input
               type="text"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                titleRef.current = e.target.value;
+                titleSourceRef.current = "edited";
+              }}
               disabled={saving || saved}
               style={{
                 width: "100%",
