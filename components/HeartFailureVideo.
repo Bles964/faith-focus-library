@@ -1,0 +1,68 @@
+const heartFailureStages: HeartFailureStage[] = [
+  {
+    label: "INTRODUCTION",
+    visual: "intro",
+    narration:
+      "Welcome to Faith and Focus Academy. Today, we discuss heart failure.",
+  },
+  {
+    label: "DEFINITION",
+    visual: "definition",
+    narration:
+      "Heart failure is the inability of the heart to pump adequately or fill normally.",
+  },
+  {
+    label: "CAUSES",
+    visual: "causes",
+    narration:
+      "Hypertension, ischaemic heart disease, myocardial infarction, valvular disease and cardiomyopathy.",
+  },
+  {
+    label: "PATHOPHYSIOLOGY",
+    visual: "pathophysiology",
+    narration:
+      "Reduced cardiac output activates RAAS and the sympathetic nervous system, causing fluid retention and increased cardiac workload.",
+  },
+  {
+    label: "CLASSIFICATION",
+    visual: "classification",
+    narration:
+      "Left-sided heart failure causes breathlessness; right-sided heart failure causes leg oedema and raised JVP. HFrEF has an ejection fraction of forty percent or less; HFpEF has an ejection fraction of fifty percent or more.",
+  },
+  {
+    label: "CLINICAL FEATURES",
+    visual: "clinical",
+    narration:
+      "Dyspnoea, orthopnoea, fatigue, leg swelling, crepitations and an S3 gallop.",
+  },
+  {
+    label: "DIAGNOSIS",
+    visual: "diagnosis",
+    narration:
+      "Diagnosis is based on history, examination and investigations.",
+  },
+  {
+    label: "INVESTIGATIONS",
+    visual: "investigations",
+    narration:
+      "ECG, chest X-ray, BNP or NT-proBNP, and echocardiography.",
+  },
+  {
+    label: "TREATMENT",
+    visual: "treatment",
+    narration:
+      "HFrEF's four pillars are ARNI, ACE inhibitor or ARB when appropriate, beta-blocker, MRA and SGLT2 inhibitor. Diuretics relieve congestion.",
+  },
+  {
+    label: "COMPLICATIONS",
+    visual: "complications",
+    narration:
+      "Pulmonary oedema, arrhythmias, kidney injury and shock.",
+  },
+  {
+    label: "RECOGNISE EARLY",
+    visual: "striking",
+    narration:
+      "Recognise heart failure early, identify the cause and initiate appropriate treatment.",
+  },
+];
