@@ -7,6 +7,8 @@ export const maxDuration = 60;
 // Google's speech models, tried in order. Names can change, so a second one is listed.
 const GEMINI_TTS_MODELS = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"];
 const GEMINI_VOICES = ["Kore", "Puck", "Charon", "Fenrir", "Aoede", "Leda", "Zephyr"];
+const CHUNK_CHARS = 350;
+const TOTAL_BUDGET_MS = 55000;
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -22,6 +24,39 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
       }
     );
   });
+}
+
+// Long narration is cut into shorter pieces, which are faster and less likely to time out
+function splitText(text: string, max: number): string[] {
+  const sentences = text.replace(/\s+/g, " ").trim().match(/[^.!?]+[.!?]*/g) || [text];
+  const chunks: string[] = [];
+  let current = "";
+  for (const raw of sentences) {
+    let s = raw.trim();
+    if (!s) continue;
+    while (s.length > max) {
+      let cut = s.lastIndexOf(", ", max);
+      if (cut < 80) cut = s.lastIndexOf(" ", max);
+      if (cut < 80) cut = max;
+      const head = s.slice(0, cut + 1).trim();
+      if (current && (current + " " + head).length > max) {
+        chunks.push(current);
+        current = "";
+      }
+      chunks.push(current ? current + " " + head : head);
+      current = "";
+      s = s.slice(cut + 1).trim();
+    }
+    if (!s) continue;
+    if (current && (current + " " + s).length > max) {
+      chunks.push(current);
+      current = s;
+    } else {
+      current = current ? current + " " + s : s;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks.length ? chunks : [text];
 }
 
 // Google returns raw audio, so wrap it as a WAV file that browsers and ffmpeg can play
@@ -45,15 +80,24 @@ function pcmToWav(pcm: Buffer, sampleRate: number): Buffer {
   return Buffer.concat([header, pcm]);
 }
 
-async function geminiSpeech(text: string, voice: string | undefined, errors: string[]): Promise<Buffer | null> {
+async function geminiPcm(
+  text: string,
+  voiceName: string,
+  errors: string[],
+  deadline: number
+): Promise<{ pcm: Buffer; rate: number } | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     errors.push("Google voice: GEMINI_API_KEY is missing");
     return null;
   }
-  const voiceName = voice && GEMINI_VOICES.includes(voice) ? voice : "Kore";
 
   for (const model of GEMINI_TTS_MODELS) {
+    const left = deadline - Date.now();
+    if (left < 4000) {
+      errors.push(`${model}: skipped, out of time`);
+      return null;
+    }
     try {
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -67,12 +111,13 @@ async function geminiSpeech(text: string, voice: string | undefined, errors: str
               speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
             },
           }),
-          signal: AbortSignal.timeout(35000),
+          signal: AbortSignal.timeout(Math.min(25000, left - 1000)),
         }
       );
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         errors.push(`${model}: HTTP ${res.status} ${t.slice(0, 80)}`);
+        if (res.status === 429) return null; // busy: let the other voice take over
         continue;
       }
       const data = await res.json();
@@ -83,9 +128,10 @@ async function geminiSpeech(text: string, voice: string | undefined, errors: str
       }
       const mime: string = part.inlineData.mimeType || "";
       const rateMatch = mime.match(/rate=(\d+)/);
-      const rate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
-      const pcm = Buffer.from(part.inlineData.data, "base64");
-      return pcmToWav(pcm, rate);
+      return {
+        pcm: Buffer.from(part.inlineData.data, "base64"),
+        rate: rateMatch ? parseInt(rateMatch[1], 10) : 24000,
+      };
     } catch (e: any) {
       errors.push(`${model}: ${e?.name === "TimeoutError" ? "timed out" : e?.message || "failed"}`);
     }
@@ -93,31 +139,60 @@ async function geminiSpeech(text: string, voice: string | undefined, errors: str
   return null;
 }
 
-async function edgeSpeech(text: string, voice: string | undefined, errors: string[]): Promise<ArrayBuffer | null> {
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const tts = new EdgeTTS(text, voice && voice.includes("Neural") ? voice : "en-US-AriaNeural");
-      const result = await withTimeout(tts.synthesize(), 25000, "Microsoft voice");
-      const audioData: any = result.audio;
-      return typeof audioData.arrayBuffer === "function" ? await audioData.arrayBuffer() : audioData;
-    } catch (e: any) {
-      errors.push(`Microsoft voice: ${e?.message || "failed"}`);
-    }
+async function geminiSpeech(chunks: string[], voice: string | undefined, errors: string[], deadline: number) {
+  const voiceName = voice && GEMINI_VOICES.includes(voice) ? voice : "Kore";
+  const parts: Buffer[] = [];
+  let rate = 24000;
+  for (const c of chunks) {
+    const r = await geminiPcm(c, voiceName, errors, deadline);
+    if (!r) return null;
+    rate = r.rate;
+    parts.push(r.pcm);
   }
-  return null;
+  return pcmToWav(Buffer.concat(parts), rate);
+}
+
+async function edgeSpeech(chunks: string[], voice: string | undefined, errors: string[], deadline: number) {
+  const voiceName = voice && voice.includes("Neural") ? voice : "en-US-AriaNeural";
+  const parts: Buffer[] = [];
+  for (const c of chunks) {
+    let ok = false;
+    for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
+      const left = deadline - Date.now();
+      if (left < 4000) {
+        errors.push("Microsoft voice: out of time");
+        return null;
+      }
+      try {
+        const tts = new EdgeTTS(c, voiceName);
+        const result = await withTimeout(tts.synthesize(), Math.min(20000, left - 1000), "Microsoft voice");
+        const audioData: any = result.audio;
+        const ab: ArrayBuffer =
+          typeof audioData.arrayBuffer === "function" ? await audioData.arrayBuffer() : audioData;
+        parts.push(Buffer.from(ab));
+        ok = true;
+      } catch (e: any) {
+        errors.push(`Microsoft voice: ${e?.message || "failed"}`);
+      }
+    }
+    if (!ok) return null;
+  }
+  return Buffer.concat(parts);
 }
 
 async function speak(text: string, voice: string | undefined) {
   const errors: string[] = [];
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
+  const chunks = splitText(text, CHUNK_CHARS);
 
-  const wav = await geminiSpeech(text, voice, errors);
+  const wav = await geminiSpeech(chunks, voice, errors, deadline);
   if (wav) {
     return new NextResponse(new Uint8Array(wav), { headers: { "Content-Type": "audio/wav" } });
   }
 
-  const mp3 = await edgeSpeech(text, voice, errors);
+  const mp3 = await edgeSpeech(chunks, voice, errors, deadline);
   if (mp3) {
-    return new NextResponse(mp3, { headers: { "Content-Type": "audio/mpeg" } });
+    return new NextResponse(new Uint8Array(mp3), { headers: { "Content-Type": "audio/mpeg" } });
   }
 
   return NextResponse.json({ error: "No voice service answered. " + errors.join(" | ") }, { status: 500 });
@@ -128,7 +203,7 @@ async function speak(text: string, voice: string | undefined) {
 export async function GET(req: NextRequest) {
   const text =
     new URL(req.url).searchParams.get("text") || "Testing the voice. One, two, three.";
-  return speak(text.slice(0, 300), undefined);
+  return speak(text.slice(0, 600), undefined);
 }
 
 export async function POST(req: NextRequest) {
