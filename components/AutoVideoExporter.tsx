@@ -22,6 +22,42 @@ const ENGINE_SERVERS = [
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Only one video may be built at a time on this page
+const buildLock = { active: false };
+
+// Narration is kept on this device, so a retry or a page refresh does not repeat finished stages
+const NARRATION_CACHE = "ffl-narration-v1";
+
+async function hashKey(key: string): Promise<string> {
+  const data = new TextEncoder().encode(key);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function readStored(key: string): Promise<Blob | null> {
+  try {
+    if (typeof window === "undefined" || !("caches" in window)) return null;
+    const c = await caches.open(NARRATION_CACHE);
+    const r = await c.match(`/__narration/${await hashKey(key)}`);
+    return r ? await r.blob() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeStored(key: string, blob: Blob): Promise<void> {
+  try {
+    if (typeof window === "undefined" || !("caches" in window)) return;
+    const c = await caches.open(NARRATION_CACHE);
+    await c.put(
+      `/__narration/${await hashKey(key)}`,
+      new Response(blob, { headers: { "Content-Type": blob.type || "audio/mpeg" } })
+    );
+  } catch {}
+}
+
 function prettyTitle(fileName: string) {
   const t = fileName.replace(/\.mp4$/i, "").replace(/[-_]+/g, " ").trim();
   return t.charAt(0).toUpperCase() + t.slice(1);
@@ -119,16 +155,24 @@ export default function AutoVideoExporter<T extends BaseStage>({
 
   async function getNarration(stage: T): Promise<Blob> {
     const key = `${voice ?? ""}|${stage.narration}`;
-    const cached = audioCache.current.get(key);
-    if (cached) return cached;
+    const mem = audioCache.current.get(key);
+    if (mem) return mem;
 
+    const stored = await readStored(key);
+    if (stored) {
+      audioCache.current.set(key, stored);
+      return stored;
+    }
+
+    const WAITS = [2, 5, 10, 20, 30];
+    const MAX = WAITS.length + 1;
     let lastErr = "";
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= MAX; attempt++) {
       try {
         setStatus(
           attempt === 1
             ? `Narrating: ${stage.label}`
-            : `Narrating: ${stage.label} (try ${attempt} of 3)`
+            : `Narrating: ${stage.label} (try ${attempt} of ${MAX})`
         );
         const signal =
           typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
@@ -143,6 +187,8 @@ export default function AutoVideoExporter<T extends BaseStage>({
         if (res.ok) {
           const blob = await res.blob();
           audioCache.current.set(key, blob);
+          await writeStored(key, blob);
+          await sleep(800); // a short pause keeps the voice service from being overloaded
           return blob;
         }
         let msg = "";
@@ -153,12 +199,24 @@ export default function AutoVideoExporter<T extends BaseStage>({
       } catch (e: any) {
         lastErr = e?.message || "network error";
       }
-      await sleep(2000 * attempt);
+
+      if (attempt < MAX) {
+        const wait = WAITS[attempt - 1];
+        for (let sec = wait; sec > 0; sec--) {
+          setStatus(`Voice is busy. Trying again in ${sec}s (try ${attempt + 1} of ${MAX})`);
+          await sleep(1000);
+        }
+      }
     }
     throw new Error(`Narration failed for ${stage.label}: ${lastErr}`);
   }
 
   async function build() {
+    if (buildLock.active) {
+      setStatus("Another video is still building. Wait for it to finish, then tap again.");
+      return;
+    }
+    buildLock.active = true;
     setBusy(true);
     setVideoUrl(null);
     setProgress(0);
@@ -219,6 +277,7 @@ export default function AutoVideoExporter<T extends BaseStage>({
         setStatus("Error: " + msg + " Tap the button to try again.");
       }
     } finally {
+      buildLock.active = false;
       setBusy(false);
     }
   }
