@@ -1,123 +1,126 @@
 "use client";
-import AutoVideoExporter from "./AutoVideoExporter";
+
+import AutoVideoExporter from "../AutoVideoExporter";
 import CardiacStageSvg from "./CardiacStageSvg";
 import type { CardiacStage } from "./CardiacStageSvg";
+
 const STAGES: CardiacStage[] = [
   {
     kind: "a1",
     label: "Introduction to Cardiac Surgery",
     narration:
-      "Welcome to Faith and Focus Academy. In this lesson, we will explore the surgical aspects of cardiac diseases. Cardiac surgery involves operations on the heart and great vessels to treat congenital abnormalities, acquired heart diseases, coronary artery disease, and other serious cardiovascular conditions. Successful treatment requires accurate diagnosis, appropriate patient selection, careful operative planning, and comprehensive postoperative care.",
+      "Welcome to this teaching session on the surgical aspects of cardiac diseases. Cardiac surgery involves the operative treatment of diseases affecting the heart, its valves, the coronary arteries, and the great vessels. The main goals are to improve cardiac function, relieve symptoms, prevent complications, and prolong life. Treatment may involve open-heart surgery, minimally invasive procedures, or catheter-based interventions.",
   },
   {
     kind: "a2",
-    label: "Anatomy of the Pericardium",
+    label: "Anatomy of the Heart",
     narration:
-      "The pericardium is a fibroserous sac surrounding the heart. It consists of an outer fibrous pericardium and an inner serous pericardium. The serous pericardium has parietal and visceral layers, with a small amount of lubricating fluid between them. This arrangement reduces friction during cardiac movement. Disease of the pericardium can impair cardiac filling and may require surgical intervention.",
+      "The heart is a muscular organ in the middle mediastinum. It has four chambers: the right atrium, right ventricle, left atrium, and left ventricle. The right side receives deoxygenated blood and pumps it to the lungs. The left side receives oxygenated blood and pumps it into the systemic circulation. The four valves are the tricuspid, pulmonary, mitral, and aortic valves. Knowledge of this anatomy is essential for understanding cardiac disease and planning surgery.",
   },
   {
     kind: "a3",
-    label: "Cardiac Tamponade",
+    label: "Cardiac Investigations",
     narration:
-      "Cardiac tamponade occurs when fluid accumulates under pressure within the pericardial sac, restricting cardiac filling and reducing cardiac output. Causes include trauma, malignancy, pericarditis, and complications of cardiac procedures. Clinical features may include hypotension, raised jugular venous pressure, tachycardia, and muffled heart sounds. This is a potentially life-threatening emergency. Urgent drainage of the pericardial fluid may be required, depending on the patient's condition.",
+      "Investigations help establish the diagnosis, assess disease severity, and determine suitability for surgery. They include electrocardiography, chest radiography, echocardiography, cardiac CT, cardiac MRI, and coronary angiography. Echocardiography assesses chamber size, valve function, ventricular function, and blood flow. Coronary angiography helps identify obstructive coronary artery disease. Blood tests and preoperative assessments are also important when planning cardiac interventions.",
   },
   {
     kind: "a4",
-    label: "Constrictive Pericarditis",
+    label: "Cardiopulmonary Bypass",
     narration:
-      "Constrictive pericarditis develops when the pericardium becomes thickened, fibrotic, or calcified, restricting diastolic filling of the heart. Patients may present with peripheral oedema, ascites, raised jugular venous pressure, hepatomegaly, and fatigue. Causes include previous tuberculosis, cardiac surgery, radiation, and other forms of pericardial inflammation. Investigations may include echocardiography, computed tomography, and cardiac magnetic resonance imaging. Pericardiectomy may be indicated in suitable patients with persistent symptomatic disease.",
+      "Cardiopulmonary bypass is a technique that temporarily takes over the functions of the heart and lungs during selected cardiac operations. Venous blood is diverted to a bypass machine, oxygenated, and returned to the arterial circulation. This allows the surgeon to operate on a relatively bloodless and motionless heart when required. Important complications include bleeding, inflammation, kidney injury, neurological complications, and disturbances of coagulation.",
   },
   {
     kind: "a5",
-    label: "Heart Valve Disease",
+    label: "Coronary Artery Disease",
     narration:
-      "The heart has four valves: the mitral, tricuspid, aortic, and pulmonary valves. Valvular disease may cause stenosis, regurgitation, or a combination of both. Stenosis obstructs forward blood flow, while regurgitation allows blood to flow backwards. Causes include rheumatic heart disease, degenerative calcification, infective endocarditis, and congenital abnormalities. Echocardiography is the principal investigation for assessing valve structure, severity, and cardiac consequences.",
+      "Coronary artery disease occurs when atherosclerotic plaques narrow the coronary arteries and reduce blood supply to the myocardium. Clinical presentations include stable angina, acute coronary syndromes, and myocardial infarction. Management includes lifestyle modification, medical treatment, and revascularisation when indicated. Coronary artery bypass grafting may be appropriate in selected patients with significant coronary disease, particularly when the anatomy or clinical circumstances favour surgery.",
   },
   {
     kind: "a6",
-    label: "Mitral and Aortic Valve Disorders",
+    label: "Coronary Artery Bypass Grafting",
     narration:
-      "Mitral stenosis obstructs blood flow from the left atrium into the left ventricle and may cause pulmonary congestion, atrial fibrillation, and pulmonary hypertension. Mitral regurgitation allows blood to return into the left atrium during ventricular systole. Aortic stenosis obstructs blood leaving the left ventricle and may cause exertional chest pain, syncope, and breathlessness. Aortic regurgitation produces backward flow into the left ventricle during diastole. Depending on the lesion and its severity, treatment may involve medication for associated complications, valve repair, or valve replacement.",
+      "Coronary artery bypass grafting, commonly called CABG, creates an alternative route for blood to reach myocardium beyond a significant coronary artery obstruction. Conduits may include the internal thoracic artery, radial artery, or saphenous vein. The choice depends on the patient, the target vessels, and surgical considerations. Potential complications include bleeding, wound infection, myocardial infarction, stroke, graft failure, and postoperative arrhythmias.",
   },
   {
     kind: "a7",
-    label: "Valve Repair and Replacement",
+    label: "Valvular Heart Disease",
     narration:
-      "Surgical treatment of severe valvular disease includes valve repair and valve replacement. Repair preserves the patient's own valve when a durable result is achievable. Replacement uses either a mechanical or a biological prosthesis. Mechanical valves are durable but usually require lifelong anticoagulation with a vitamin K antagonist. Biological valves generally have a lower long-term anticoagulation burden in the absence of another indication, but they may deteriorate over time. The choice depends on age, anatomy, comorbidities, anticoagulation risks, and patient preferences.",
+      "Valvular heart disease results from stenosis or regurgitation of one or more cardiac valves. Stenosis restricts forward blood flow, while regurgitation allows backward flow. Common examples include mitral stenosis, mitral regurgitation, aortic stenosis, and aortic regurgitation. Patients may develop breathlessness, fatigue, syncope, chest pain, or heart failure. Echocardiography is central to assessment, and intervention depends on the affected valve, severity, symptoms, ventricular function, and overall clinical risk.",
   },
   {
     kind: "a8",
-    label: "Coronary Artery Disease",
+    label: "Valve Repair and Replacement",
     narration:
-      "Coronary artery disease commonly results from atherosclerotic plaque formation within the coronary arteries. Progressive narrowing reduces blood supply to the myocardium and may cause angina. Acute plaque disruption can lead to myocardial infarction. Assessment includes clinical history, electrocardiography, cardiac biomarkers when indicated, and appropriate coronary imaging. Management may include lifestyle modification, medical therapy, percutaneous coronary intervention, or coronary artery bypass grafting, depending on the clinical presentation and coronary anatomy.",
+      "Surgical treatment of valve disease may involve valve repair or valve replacement. Repair preserves the patient's own valve and is preferred when a durable result is achievable. Replacement uses either a mechanical or a biological prosthesis. Mechanical valves are durable but generally require lifelong anticoagulation. Biological valves usually have a limited lifespan because of structural degeneration. The decision must consider age, bleeding risk, anticoagulation requirements, comorbidities, and patient preference.",
   },
   {
     kind: "a9",
-    label: "Coronary Artery Bypass Grafting",
+    label: "Infective Endocarditis",
     narration:
-      "Coronary artery bypass grafting, commonly called CABG, creates an alternative route for blood to reach myocardium beyond significant coronary artery narrowing. Common conduits include the left internal thoracic artery and the great saphenous vein. The radial artery may also be used. CABG is considered for selected patients with complex coronary disease, significant left main disease, or other appropriate anatomical and clinical indications. Potential complications include bleeding, infection, stroke, myocardial infarction, arrhythmias, and kidney injury. Long-term secondary prevention remains essential.",
+      "Infective endocarditis is an infection involving the endocardial surface, commonly affecting cardiac valves. Features may include fever, a new or changing murmur, embolic events, and evidence of systemic infection. Diagnosis is based on clinical assessment, blood cultures, and cardiac imaging. Treatment requires appropriate antimicrobial therapy. Surgery may be necessary in selected patients with heart failure caused by valve dysfunction, uncontrolled infection, abscess formation, or a high risk of further embolisation.",
   },
   {
     kind: "b1",
-    label: "Cardiac Tumours",
+    label: "Heart Failure and Surgical Treatment",
     narration:
-      "Cardiac tumours may be primary or secondary. Primary cardiac tumours are uncommon, and myxoma is a well-known example of a benign primary tumour in adults. A myxoma may obstruct blood flow, cause embolism, or produce constitutional symptoms. Secondary cardiac tumours are more common and usually arise through metastatic spread. Echocardiography is often the initial investigation, while computed tomography and cardiac magnetic resonance imaging can provide additional information. Symptomatic or embolic-risk myxomas are generally treated with surgical excision.",
+      "Heart failure occurs when the heart cannot provide adequate circulation without elevated filling pressures. Causes include coronary artery disease, hypertension, cardiomyopathy, and valvular disease. Management begins with identifying and treating reversible causes and providing appropriate medical therapy. Selected patients may benefit from valve surgery, coronary revascularisation, ventricular assist devices, or heart transplantation. Decisions require multidisciplinary assessment of disease severity, comorbidities, functional status, and expected benefit.",
   },
   {
     kind: "b2",
-    label: "Cardiac Surgery Assessment",
+    label: "Cardiomyopathies",
     narration:
-      "Before cardiac surgery, the team assesses the patient's symptoms, functional status, comorbidities, medication history, and operative risk. Investigations may include blood tests, electrocardiography, echocardiography, and coronary angiography when indicated. Respiratory function, renal function, coagulation status, and infection risks are also considered. The patient should receive a clear explanation of the proposed procedure, alternatives, expected benefits, and potential complications. Informed consent and multidisciplinary planning are essential.",
+      "Cardiomyopathies are disorders of the heart muscle associated with structural or functional abnormalities. Important forms include dilated, hypertrophic, and restrictive cardiomyopathy. Patients may present with heart failure, arrhythmias, syncope, or sudden cardiac death. Investigations include electrocardiography, echocardiography, cardiac MRI, and selected genetic or laboratory tests. Treatment depends on the type and may include medication, devices, treatment of arrhythmias, mechanical circulatory support, or transplantation in advanced disease.",
   },
   {
     kind: "b3",
-    label: "Cardiopulmonary Bypass",
+    label: "Aortic Aneurysm",
     narration:
-      "Cardiopulmonary bypass allows the surgeon to operate on the heart while a machine temporarily supports circulation and gas exchange. Venous blood is drained into the bypass circuit, oxygenated, and returned to the arterial circulation. Depending on the operation, the heart may be arrested using cardioplegia. Cardiopulmonary bypass can affect coagulation, inflammatory responses, kidney function, and other organ systems. Careful monitoring and appropriate management are necessary throughout the procedure.",
+      "An aortic aneurysm is an abnormal dilatation of the aorta. Important risk factors include age, smoking, hypertension, atherosclerosis, and inherited connective tissue disorders. Aneurysms may remain asymptomatic until they enlarge, rupture, or cause complications. Diagnosis and surveillance rely on appropriate imaging. Repair may be indicated according to aneurysm size, growth rate, location, symptoms, and individual risk. Treatment options include open surgical repair and endovascular repair in suitable patients.",
   },
   {
     kind: "b4",
-    label: "Sternotomy and Surgical Access",
+    label: "Aortic Dissection",
     narration:
-      "Median sternotomy is a traditional approach for many open cardiac procedures. The sternum is divided to provide access to the heart and great vessels. Other procedures may use alternative incisions or minimally invasive approaches in appropriately selected patients. Surgical access is chosen according to the operation, anatomy, patient factors, and the surgical team's expertise. Careful haemostasis, protection of surrounding structures, and appropriate sternal closure help reduce complications.",
+      "Aortic dissection occurs when blood enters the aortic wall through an intimal tear or related wall disruption, separating its layers. It can present with sudden severe chest or back pain, syncope, pulse deficits, or neurological symptoms. It is a life-threatening emergency. CT angiography is commonly used in stable patients to confirm the diagnosis. Acute type A dissection generally requires emergency surgical assessment and repair. Uncomplicated type B dissection is often initially managed with intensive blood pressure and heart rate control, unless complications require intervention.",
   },
   {
     kind: "b5",
-    label: "Postoperative Cardiac Care",
+    label: "Cardiac Tamponade",
     narration:
-      "After cardiac surgery, patients require close monitoring of haemodynamics, oxygenation, cardiac rhythm, bleeding, urine output, and neurological status. Ventilation and haemodynamic support are adjusted according to the patient's condition. Important complications include low cardiac output, arrhythmias, tamponade, bleeding, infection, kidney injury, and respiratory complications. Early recognition and prompt treatment can improve outcomes. Rehabilitation and secondary prevention are important parts of recovery.",
+      "Cardiac tamponade occurs when fluid or blood accumulates in the pericardial space and restricts cardiac filling. Reduced ventricular filling leads to reduced cardiac output and potentially shock. Clinical features may include hypotension, raised jugular venous pressure, tachycardia, and muffled heart sounds, although the complete triad is not always present. Echocardiography is central to diagnosis. Haemodynamically significant tamponade requires urgent drainage, with the method selected according to the cause and clinical circumstances.",
   },
   {
     kind: "b6",
-    label: "Low Cardiac Output Syndrome",
+    label: "Congenital Cardiac Conditions",
     narration:
-      "Low cardiac output syndrome occurs when the heart cannot deliver sufficient blood to meet the body's metabolic requirements. It may follow myocardial dysfunction, prolonged ischaemia, inadequate preload, excessive afterload, arrhythmias, or mechanical complications. Findings may include hypotension, cool extremities, altered mental status, reduced urine output, and elevated lactate. Management begins with identifying and correcting the cause, while supporting oxygenation and circulation. Fluids, vasoactive medicines, inotropes, or mechanical circulatory support may be appropriate in selected cases.",
+      "Congenital cardiac conditions are structural abnormalities of the heart or great vessels present from birth. Their effects depend on the anatomy and the resulting haemodynamic disturbance. Patients may present with murmurs, cyanosis, breathlessness, poor feeding, poor growth, or heart failure. Assessment may include echocardiography, electrocardiography, and advanced imaging when needed. Management ranges from observation and medical stabilisation to catheter-based procedures and surgery, depending on the lesion and its severity.",
   },
   {
     kind: "b7",
-    label: "Postoperative Arrhythmias",
+    label: "Cardiac Trauma",
     narration:
-      "Arrhythmias are common after cardiac surgery. Atrial fibrillation is particularly important because it may cause haemodynamic instability and increase thromboembolic risk. Contributing factors include inflammation, electrolyte abnormalities, ischaemia, and changes in autonomic tone. Management depends on the rhythm and the patient's stability. It may involve correcting reversible causes, rate or rhythm control, and anticoagulation when indicated. Haemodynamically unstable arrhythmias require urgent assessment and appropriate emergency treatment.",
+      "Cardiac trauma may follow blunt or penetrating chest injury. Potential injuries include myocardial contusion, chamber rupture, coronary artery injury, valvular damage, and traumatic pericardial tamponade. Initial management follows trauma resuscitation principles, prioritising airway, breathing, and circulation. Haemodynamic instability after penetrating chest trauma requires urgent evaluation for life-threatening thoracic injury. Bedside ultrasound and other imaging may assist diagnosis, but investigations must not delay necessary emergency intervention.",
   },
   {
     kind: "b8",
-    label: "Cardiac Surgery Complications",
+    label: "Postoperative Cardiac Care",
     narration:
-      "Important complications of cardiac surgery include haemorrhage, infection, stroke, myocardial infarction, renal injury, respiratory failure, arrhythmias, and low cardiac output. Cardiac tamponade must be considered when a postoperative patient develops unexplained haemodynamic deterioration. Prevention includes appropriate surgical technique, infection control, careful fluid management, and close postoperative surveillance. Early recognition and multidisciplinary intervention are essential when complications arise.",
+      "Postoperative cardiac care focuses on maintaining adequate oxygenation and circulation while identifying complications early. Monitoring includes haemodynamic status, cardiac rhythm, oxygen saturation, urine output, drainage, laboratory results, and signs of bleeding or infection. Important complications include arrhythmias, myocardial dysfunction, respiratory failure, kidney injury, neurological events, and wound infection. Pain control, respiratory physiotherapy, mobilisation, medication review, and appropriate follow-up support recovery.",
   },
   {
     kind: "b9",
-    label: "Cardiac Rehabilitation",
+    label: "Complications of Cardiac Surgery",
     narration:
-      "Cardiac rehabilitation supports recovery after cardiac surgery and other major cardiovascular events. It includes supervised exercise when appropriate, education, medication adherence, nutritional advice, smoking cessation, and psychological support. Activity is increased gradually according to the patient's recovery and the procedure performed. Rehabilitation can improve functional capacity and quality of life. Patients should receive clear instructions about wound care, warning symptoms, follow-up appointments, and when to seek urgent medical attention.",
+      "Complications of cardiac surgery include bleeding, infection, arrhythmias, stroke, myocardial infarction, kidney injury, respiratory complications, and complications related to cardiopulmonary bypass. The risk depends on the procedure, the patient's underlying condition, and preoperative risk factors. Prevention involves careful assessment, sterile technique, appropriate anticoagulation management, meticulous operative technique, and vigilant postoperative monitoring. Early recognition and timely treatment are essential to improve outcomes.",
   },
   {
     kind: "b10",
     label: "Summary of Cardiac Surgery",
     narration:
-      "Let us summarize the key points. Cardiac surgery treats selected diseases of the heart, valves, coronary arteries, and pericardium. Accurate diagnosis and appropriate patient selection are essential. Common procedures include valve repair or replacement, coronary artery bypass grafting, pericardial drainage, and selected tumour excision. Cardiopulmonary bypass supports circulation during many open-heart procedures. Postoperative care focuses on haemodynamic stability, rhythm monitoring, bleeding, infection, and organ function. Early recognition of complications and appropriate rehabilitation are essential for good outcomes. Thank you for learning with Faith and Focus Academy.",
+      "In summary, cardiac surgery treats selected diseases of the heart, valves, coronary arteries, pericardium, and great vessels. Safe care requires an understanding of cardiac anatomy, accurate diagnosis, appropriate patient selection, careful operative planning, and structured postoperative monitoring. Treatment may involve medication, catheter-based intervention, conventional surgery, or advanced therapies. For clinical examinations, always connect the presenting symptoms with the underlying pathology, appropriate investigations, indications for intervention, potential complications, and long-term follow-up.",
   },
 ];
+
 export default function Cardiacvideo() {
   return (
     <AutoVideoExporter
