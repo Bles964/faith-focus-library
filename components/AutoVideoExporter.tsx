@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import type { ComponentType } from "react";
+import type { ComponentType, CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import { createClient } from "@/lib/supabaseClient";
 
@@ -58,6 +58,59 @@ async function writeStored(key: string, blob: Blob): Promise<void> {
   } catch {}
 }
 
+// Your own recorded voice is kept on this phone, one recording per stage of each video
+const MY_VOICE_CACHE = "ffl-my-voice-v1";
+
+async function ownKey(fileName: string, idx: number): Promise<string> {
+  return `/__myvoice/${await hashKey(`${fileName}|${idx}`)}`;
+}
+
+async function readOwn(fileName: string, idx: number): Promise<Blob | null> {
+  try {
+    if (typeof window === "undefined" || !("caches" in window)) return null;
+    const c = await caches.open(MY_VOICE_CACHE);
+    const r = await c.match(await ownKey(fileName, idx));
+    return r ? await r.blob() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeOwn(fileName: string, idx: number, blob: Blob): Promise<void> {
+  try {
+    if (typeof window === "undefined" || !("caches" in window)) return;
+    const c = await caches.open(MY_VOICE_CACHE);
+    await c.put(
+      await ownKey(fileName, idx),
+      new Response(blob, { headers: { "Content-Type": blob.type || "audio/mp4" } })
+    );
+  } catch {}
+}
+
+async function deleteOwn(fileName: string, idx: number): Promise<void> {
+  try {
+    if (typeof window === "undefined" || !("caches" in window)) return;
+    const c = await caches.open(MY_VOICE_CACHE);
+    await c.delete(await ownKey(fileName, idx));
+  } catch {}
+}
+
+function pickRecorderType(): string | undefined {
+  if (typeof MediaRecorder === "undefined") return undefined;
+  for (const t of ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"]) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return undefined;
+}
+
+function audioExt(type: string): string {
+  if (type.includes("wav")) return "wav";
+  if (type.includes("mp4") || type.includes("m4a") || type.includes("aac")) return "m4a";
+  if (type.includes("webm")) return "webm";
+  if (type.includes("ogg")) return "ogg";
+  return "mp3";
+}
+
 function prettyTitle(fileName: string) {
   const t = fileName.replace(/\.mp4$/i, "").replace(/[-_]+/g, " ").trim();
   return t.charAt(0).toUpperCase() + t.slice(1);
@@ -86,6 +139,16 @@ export default function AutoVideoExporter<T extends BaseStage>({
   const [saveMsg, setSaveMsg] = useState("");
 
   const rootRef = useRef<HTMLDivElement>(null);
+
+  // Recording my own voice
+  const [showVoice, setShowVoice] = useState(false);
+  const [recorded, setRecorded] = useState<Record<number, boolean>>({});
+  const [recIdx, setRecIdx] = useState<number | null>(null);
+  const [voiceMsg, setVoiceMsg] = useState("");
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recChunksRef = useRef<BlobPart[]>([]);
+  const recStreamRef = useRef<MediaStream | null>(null);
+  const playRef = useRef<HTMLAudioElement | null>(null);
   const titleRef = useRef(saveTitle ?? prettyTitle(fileName));
   const titleSourceRef = useRef<"heading" | "fallback" | "edited">(saveTitle ? "heading" : "fallback");
   const savedRef = useRef(false);
@@ -111,6 +174,93 @@ export default function AutoVideoExporter<T extends BaseStage>({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const flags: Record<number, boolean> = {};
+      for (let i = 0; i < stages.length; i++) {
+        const b = await readOwn(fileName, i);
+        if (b) flags[i] = true;
+      }
+      if (!cancelled) setRecorded(flags);
+    })();
+    return () => {
+      cancelled = true;
+      try {
+        recorderRef.current?.stop();
+      } catch {}
+      recStreamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function startRecording(idx: number) {
+    setVoiceMsg("");
+    try {
+      if (
+        typeof navigator === "undefined" ||
+        !navigator.mediaDevices?.getUserMedia ||
+        typeof MediaRecorder === "undefined"
+      ) {
+        setVoiceMsg("This browser cannot record. Try Safari on iPhone or Chrome.");
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recStreamRef.current = stream;
+      const type = pickRecorderType();
+      const rec = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream);
+      recChunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recChunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        const blob = new Blob(recChunksRef.current, { type: rec.mimeType || type || "audio/mp4" });
+        stream.getTracks().forEach((t) => t.stop());
+        recStreamRef.current = null;
+        setRecIdx(null);
+        if (blob.size < 2000) {
+          setVoiceMsg("That recording was empty. Please try again.");
+          return;
+        }
+        await writeOwn(fileName, idx, blob);
+        setRecorded((prev) => ({ ...prev, [idx]: true }));
+        setVoiceMsg("Saved on this phone.");
+      };
+      recorderRef.current = rec;
+      rec.start();
+      setRecIdx(idx);
+    } catch {
+      setRecIdx(null);
+      setVoiceMsg("Could not use the microphone. Allow microphone access for this site, then try again.");
+    }
+  }
+
+  function stopRecording() {
+    try {
+      recorderRef.current?.stop();
+    } catch {}
+  }
+
+  async function playRecording(idx: number) {
+    const b = await readOwn(fileName, idx);
+    if (!b) return;
+    playRef.current?.pause();
+    const url = URL.createObjectURL(b);
+    const a = new Audio(url);
+    playRef.current = a;
+    a.onended = () => URL.revokeObjectURL(url);
+    a.play().catch(() => {});
+  }
+
+  async function removeRecording(idx: number) {
+    await deleteOwn(fileName, idx);
+    setRecorded((prev) => {
+      const n = { ...prev };
+      delete n[idx];
+      return n;
+    });
+  }
 
   async function stageToPngBlob(stage: T): Promise<Blob> {
     const container = document.createElement("div");
@@ -180,7 +330,13 @@ export default function AutoVideoExporter<T extends BaseStage>({
     throw new Error(`Could not download the video engine (${lastErr}).`);
   }
 
-  async function getNarration(stage: T): Promise<Blob> {
+  async function getNarration(stage: T, idx: number): Promise<Blob> {
+    const own = await readOwn(fileName, idx);
+    if (own) {
+      setStatus(`Using your voice: ${stage.label}`);
+      return own;
+    }
+
     const key = `${voice ?? ""}|${stage.narration}`;
     const mem = audioCache.current.get(key);
     if (mem) return mem;
@@ -259,14 +415,14 @@ export default function AutoVideoExporter<T extends BaseStage>({
       for (let idx = 0; idx < stages.length; idx++) {
         const stage = stages[idx];
 
-        const audioBlob = await getNarration(stage);
+        const audioBlob = await getNarration(stage, idx);
         const duration = await getAudioDuration(audioBlob);
 
         setStatus(`Drawing: ${stage.label}`);
         const pngBlob = await stageToPngBlob(stage);
 
         const pngName = `frame${idx}.png`;
-        const audioName = `audio${idx}.${audioBlob.type.includes("wav") ? "wav" : "mp3"}`;
+        const audioName = `audio${idx}.${audioExt(audioBlob.type)}`;
         await ffmpeg.writeFile(pngName, await fetchFile(pngBlob));
         await ffmpeg.writeFile(audioName, await fetchFile(audioBlob));
 
@@ -440,6 +596,104 @@ export default function AutoVideoExporter<T extends BaseStage>({
         />
         Save to the library automatically when ready
       </label>
+
+      <button
+        onClick={() => setShowVoice((v) => !v)}
+        style={{
+          marginTop: 12,
+          background: "transparent",
+          border: "none",
+          color: "#D4AF37",
+          textDecoration: "underline",
+          cursor: "pointer",
+          fontSize: ".9rem",
+          padding: 0,
+        }}
+      >
+        🎙️ Record my own voice ({Object.keys(recorded).length} of {stages.length} done)
+      </button>
+
+      {showVoice && (
+        <div style={{ marginTop: 10, border: "1px solid #2A3E5C", borderRadius: 10, padding: 12 }}>
+          <p style={{ color: "#9AA6B8", fontSize: ".8rem", marginBottom: 10 }}>
+            Read each script in your own voice. Stages you record use your voice, and any stage without a recording
+            uses the computer voice. Recordings stay on this phone.
+          </p>
+          {stages.map((st, i) => {
+            const btn: CSSProperties = {
+              background: "transparent",
+              color: "#D4AF37",
+              border: "1px solid #D4AF37",
+              borderRadius: 6,
+              padding: "6px 10px",
+              fontSize: ".8rem",
+              cursor: "pointer",
+            };
+            const isRec = recIdx === i;
+            return (
+              <div key={i} style={{ borderTop: i === 0 ? "none" : "1px solid #2A3E5C", padding: "10px 0" }}>
+                <p style={{ fontWeight: 600, fontSize: ".9rem" }}>
+                  {i + 1}. {st.label} {recorded[i] ? "✅" : ""}
+                </p>
+                <p style={{ color: "#9AA6B8", fontSize: ".8rem", margin: "4px 0 8px", lineHeight: 1.5 }}>
+                  {st.narration}
+                </p>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {isRec ? (
+                    <button onClick={stopRecording} style={{ ...btn, color: "#E5584F", borderColor: "#E5584F" }}>
+                      ⏹ Stop
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => startRecording(i)}
+                      disabled={busy || recIdx !== null}
+                      style={{ ...btn, opacity: busy || recIdx !== null ? 0.5 : 1 }}
+                    >
+                      {recorded[i] ? "🎙️ Record again" : "🎙️ Record"}
+                    </button>
+                  )}
+                  {!isRec && (
+                    <label
+                      style={{
+                        ...btn,
+                        display: "inline-block",
+                        opacity: busy || recIdx !== null ? 0.5 : 1,
+                      }}
+                    >
+                      ⬆ Upload audio
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        disabled={busy || recIdx !== null}
+                        style={{ display: "none" }}
+                        onChange={async (e) => {
+                          const f = e.target.files?.[0];
+                          e.target.value = "";
+                          if (!f) return;
+                          await writeOwn(fileName, i, f);
+                          setRecorded((prev) => ({ ...prev, [i]: true }));
+                          setVoiceMsg("Audio saved on this phone.");
+                        }}
+                      />
+                    </label>
+                  )}
+                  {recorded[i] && !isRec && (
+                    <>
+                      <button onClick={() => playRecording(i)} style={btn}>
+                        ▶ Play
+                      </button>
+                      <button onClick={() => removeRecording(i)} style={{ ...btn, color: "#9AA6B8", borderColor: "#2A3E5C" }}>
+                        Delete
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {voiceMsg && <p style={{ color: "#9AA6B8", fontSize: ".85rem", marginTop: 8 }}>{voiceMsg}</p>}
+        </div>
+      )}
       {status && (
         <p style={{ color: "#9AA6B8", fontSize: ".85rem", marginTop: 10 }}>
           {status} {progress > 0 && progress < 100 && `(${progress}%)`}
