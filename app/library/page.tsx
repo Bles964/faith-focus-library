@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabaseClient";
+import FolderPicker from "@/components/FolderPicker";
 
 type Doc = {
   id: string;
@@ -27,6 +28,7 @@ export default function LibraryPage() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [links, setLinks] = useState<Link[]>([]);
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
+  const [movingDoc, setMovingDoc] = useState<Doc | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | "All">("All");
@@ -183,25 +185,69 @@ export default function LibraryPage() {
     }
   }
 
-  const docIdsInFolder: Set<string> | null =
-    hasFolders && activeFolder
-      ? (() => {
-          const ids = folderAndDescendants(activeFolder);
-          return new Set(links.filter((l) => ids.has(l.folder_id)).map((l) => l.document_id));
-        })()
-      : null;
+  const q = search.trim().toLowerCase();
+  const matchesSearch = (d: Doc) =>
+    !q || d.title.toLowerCase().includes(q) || (d.specialty ?? "").toLowerCase().includes(q);
 
-  const filtered = docs.filter((d) => {
-    const matchesCategory = hasFolders
-      ? docIdsInFolder === null || docIdsInFolder.has(d.id)
-      : activeCategory === "All" || d.category === activeCategory;
-    const q = search.trim().toLowerCase();
-    const matchesSearch =
-      !q ||
-      d.title.toLowerCase().includes(q) ||
-      (d.specialty ?? "").toLowerCase().includes(q);
-    return matchesCategory && matchesSearch;
-  });
+  const filedIds = new Set(links.map((l) => l.document_id));
+
+  let filtered: Doc[];
+  if (!hasFolders) {
+    filtered = docs.filter(
+      (d) => (activeCategory === "All" || d.category === activeCategory) && matchesSearch(d)
+    );
+  } else if (q) {
+    // Searching looks through everything
+    filtered = docs.filter(matchesSearch);
+  } else if (activeFolder) {
+    // Inside a folder: the files placed directly in it
+    const here = new Set(links.filter((l) => l.folder_id === activeFolder).map((l) => l.document_id));
+    filtered = docs.filter((d) => here.has(d.id));
+  } else {
+    // Top level: files that are not in any folder yet
+    filtered = docs.filter((d) => !filedIds.has(d.id));
+  }
+
+  // How many files are inside a folder (including its sub-folders)
+  function countIn(folderId: string): number {
+    const ids = folderAndDescendants(folderId);
+    return new Set(links.filter((l) => ids.has(l.folder_id)).map((l) => l.document_id)).size;
+  }
+
+  async function reloadFolders() {
+    const { data: fd } = await supabase.from("folders").select("id,parent_id,name,sort_order");
+    if (fd) setFolders(fd as Folder[]);
+    const { data: ld } = await supabase.from("document_folders").select("document_id,folder_id");
+    if (ld) setLinks(ld as Link[]);
+  }
+
+  async function createFolder() {
+    const name = window.prompt(activeFolder ? "Name of the new folder inside here:" : "Name of the new folder:");
+    if (!name || !name.trim()) return;
+    const sibs = sortedChildren(activeFolder);
+    const next = sibs.length ? Math.max(...sibs.map((f) => f.sort_order)) + 1 : 1;
+    const { error } = await supabase
+      .from("folders")
+      .insert({ name: name.trim(), parent_id: activeFolder, sort_order: next });
+    if (error) return alert(error.message ?? "Could not create the folder.");
+    reloadFolders();
+  }
+
+  async function renameFolder(f: Folder) {
+    const name = window.prompt("Rename folder:", f.name);
+    if (!name || !name.trim() || name === f.name) return;
+    const { error } = await supabase.from("folders").update({ name: name.trim() }).eq("id", f.id);
+    if (error) return alert(error.message ?? "Could not rename the folder.");
+    reloadFolders();
+  }
+
+  async function deleteFolder(f: Folder) {
+    if (!window.confirm(`Delete the folder "${f.name}" and any folders inside it? Your files are not deleted.`)) return;
+    const { error } = await supabase.from("folders").delete().eq("id", f.id);
+    if (error) return alert(error.message ?? "Could not delete the folder.");
+    setCurrentFolder(f.parent_id);
+    reloadFolders();
+  }
 
   async function getCachedBlobUrl(doc: Doc): Promise<string | null> {
     if (!("caches" in window)) return null;
@@ -455,12 +501,12 @@ export default function LibraryPage() {
         <h1 className="font-serif text-2xl text-navy">Browse</h1>
         {isAdmin && (
           <div className="flex items-center gap-2">
-            <a
-              href="/admin/catalogue"
-              className="text-xs px-3 py-1.5 rounded border border-navy/30 text-navy/70 hover:border-gold"
+            <button
+              onClick={createFolder}
+              className="text-xs px-3 py-1.5 rounded bg-gold text-navy font-medium"
             >
-              Manage catalogue
-            </a>
+              + New folder
+            </button>
             <button
               onClick={downloadAll}
               disabled={downloadingAll}
@@ -484,40 +530,62 @@ export default function LibraryPage() {
 
       {hasFolders ? (
         <div className="mb-6">
-          <div className="flex flex-wrap items-center gap-1 text-sm text-navy/70 mb-3">
-            <button
-              onClick={() => setCurrentFolder(null)}
-              className={activeFolder ? "underline hover:text-gold" : "font-medium text-navy"}
-            >
-              All files
-            </button>
-            {breadcrumb.map((f, i) => (
-              <span key={f.id} className="flex items-center gap-1">
-                <span aria-hidden>/</span>
-                <button
-                  onClick={() => setCurrentFolder(f.id)}
-                  className={
-                    i === breadcrumb.length - 1
-                      ? "font-medium text-navy"
-                      : "underline hover:text-gold"
-                  }
-                >
-                  {f.name}
-                </button>
-              </span>
-            ))}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {sortedChildren(activeFolder).map((f) => (
+          {activeFolder && !q && (
+            <div className="mb-4">
               <button
-                key={f.id}
-                onClick={() => setCurrentFolder(f.id)}
-                className="text-sm px-3 py-1 rounded-full border border-navy/30 text-navy/70 hover:border-navy"
+                onClick={() => setCurrentFolder(breadcrumb.length > 1 ? breadcrumb[breadcrumb.length - 2].id : null)}
+                className="text-sm text-navy/70 underline hover:text-gold mb-2"
               >
-                {f.name}
+                ← Back
               </button>
-            ))}
-          </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="font-serif text-xl text-navy">{breadcrumb.map((f) => f.name).join(" / ")}</h2>
+                {isAdmin && (
+                  <div className="flex items-center gap-3 text-xs">
+                    <a href={`/upload?folder=${activeFolder}`} className="underline text-navy/70 hover:text-gold">
+                      Upload here
+                    </a>
+                    <button
+                      onClick={() => renameFolder(breadcrumb[breadcrumb.length - 1])}
+                      className="underline text-navy/70 hover:text-gold"
+                    >
+                      Rename folder
+                    </button>
+                    <button
+                      onClick={() => deleteFolder(breadcrumb[breadcrumb.length - 1])}
+                      className="underline text-red-600 hover:text-red-800"
+                    >
+                      Delete folder
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {!q && sortedChildren(activeFolder).length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {sortedChildren(activeFolder).map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setCurrentFolder(f.id)}
+                  className="text-left border border-navy/15 rounded-lg p-4 bg-white hover:border-gold transition-colors"
+                >
+                  <svg viewBox="0 0 24 24" className="w-8 h-8 text-gold mb-2" fill="currentColor" aria-hidden>
+                    <path d="M3 6a2 2 0 0 1 2-2h4.2a2 2 0 0 1 1.4.6L12 6h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z" />
+                  </svg>
+                  <span className="block font-serif text-navy leading-tight">{f.name}</span>
+                  <span className="block text-xs text-navy/50 mt-1">
+                    {countIn(f.id)} {countIn(f.id) === 1 ? "file" : "files"}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {!q && !activeFolder && filtered.length > 0 && (
+            <p className="text-sm text-navy/60 mt-6">Not in a folder yet</p>
+          )}
         </div>
       ) : (
         <div className="flex flex-wrap gap-2 mb-6">
@@ -543,6 +611,10 @@ export default function LibraryPage() {
         <p className="text-navy/50 text-sm">
           {hasFolders && activeFolder
             ? "No files in this folder yet."
+            : hasFolders
+            ? q
+              ? "No files match your search."
+              : ""
             : 'Nothing here yet. Use "Upload" to add your first guide.'}
         </p>
       ) : (
@@ -599,6 +671,14 @@ export default function LibraryPage() {
                   )}
                   {isAdmin && (
                     <>
+                      {hasFolders && (
+                        <button
+                          onClick={() => setMovingDoc(doc)}
+                          className="text-xs text-navy/60 hover:text-gold underline"
+                        >
+                          Put in folders
+                        </button>
+                      )}
                       <button
                         onClick={() => renameDoc(doc)}
                         className="text-xs text-navy/60 hover:text-gold underline"
@@ -633,6 +713,23 @@ export default function LibraryPage() {
               </div>
             );
           })}
+        </div>
+      )}
+      {movingDoc && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-4">
+            <p className="font-serif text-lg text-navy mb-3">{movingDoc.title}</p>
+            <FolderPicker documentId={movingDoc.id} />
+            <button
+              onClick={() => {
+                setMovingDoc(null);
+                reloadFolders();
+              }}
+              className="mt-4 w-full rounded bg-navy px-4 py-2 text-sm font-medium text-white"
+            >
+              Done
+            </button>
+          </div>
         </div>
       )}
     </div>
