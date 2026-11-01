@@ -14,6 +14,9 @@ type Doc = {
   created_at: string;
 };
 
+type Folder = { id: string; parent_id: string | null; name: string; sort_order: number };
+type Link = { document_id: string; folder_id: string };
+
 const CACHE_NAME = "library-pdfs-v1";
 
 
@@ -21,6 +24,9 @@ export default function LibraryPage() {
   const supabase = createClient();
   const router = useRouter();
   const [docs, setDocs] = useState<Doc[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [links, setLinks] = useState<Link[]>([]);
+  const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | "All">("All");
@@ -46,6 +52,8 @@ export default function LibraryPage() {
       if (s) setSearch(s);
       const c = sessionStorage.getItem("library-category");
       if (c) setActiveCategory(c);
+      const f = sessionStorage.getItem("library-folder");
+      if (f) setCurrentFolder(f);
     } catch {}
   }, []);
 
@@ -53,8 +61,9 @@ export default function LibraryPage() {
     try {
       sessionStorage.setItem("library-search", search);
       sessionStorage.setItem("library-category", activeCategory);
+      sessionStorage.setItem("library-folder", currentFolder ?? "");
     } catch {}
-  }, [search, activeCategory]);
+  }, [search, activeCategory, currentFolder]);
 
   useEffect(() => {
     async function load() {
@@ -78,6 +87,17 @@ export default function LibraryPage() {
         .order("created_at", { ascending: false });
 
       if (!error && data) setDocs(data as Doc[]);
+
+      // Your own folders (Manage catalogue) and which files sit in which folder
+      const { data: folderData } = await supabase
+        .from("folders")
+        .select("id,parent_id,name,sort_order");
+      if (folderData) setFolders(folderData as Folder[]);
+      const { data: linkData } = await supabase
+        .from("document_folders")
+        .select("document_id,folder_id");
+      if (linkData) setLinks(linkData as Link[]);
+
       setLoading(false);
 
       if (typeof window !== "undefined" && "caches" in window) {
@@ -126,8 +146,55 @@ export default function LibraryPage() {
 
   const categories = ["All", ...Array.from(new Set(docs.map((d) => d.category)))];
 
+  // ---- Folder helpers ----
+  const hasFolders = folders.length > 0;
+  const sortedChildren = (parent: string | null) =>
+    folders
+      .filter((f) => f.parent_id === parent)
+      .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
+
+  // A folder and everything inside it
+  function folderAndDescendants(id: string): Set<string> {
+    const out = new Set<string>([id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const f of folders) {
+        if (f.parent_id && out.has(f.parent_id) && !out.has(f.id)) {
+          out.add(f.id);
+          grew = true;
+        }
+      }
+    }
+    return out;
+  }
+
+  // If a saved folder was deleted, go back to the top
+  const folderExists = currentFolder ? folders.some((f) => f.id === currentFolder) : true;
+  const activeFolder = folderExists ? currentFolder : null;
+
+  const breadcrumb: Folder[] = [];
+  {
+    let cur = activeFolder ? folders.find((f) => f.id === activeFolder) : undefined;
+    while (cur) {
+      breadcrumb.unshift(cur);
+      const pid: string | null = cur.parent_id;
+      cur = pid ? folders.find((f) => f.id === pid) : undefined;
+    }
+  }
+
+  const docIdsInFolder: Set<string> | null =
+    hasFolders && activeFolder
+      ? (() => {
+          const ids = folderAndDescendants(activeFolder);
+          return new Set(links.filter((l) => ids.has(l.folder_id)).map((l) => l.document_id));
+        })()
+      : null;
+
   const filtered = docs.filter((d) => {
-    const matchesCategory = activeCategory === "All" || d.category === activeCategory;
+    const matchesCategory = hasFolders
+      ? docIdsInFolder === null || docIdsInFolder.has(d.id)
+      : activeCategory === "All" || d.category === activeCategory;
     const q = search.trim().toLowerCase();
     const matchesSearch =
       !q ||
@@ -387,13 +454,21 @@ export default function LibraryPage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="font-serif text-2xl text-navy">Browse</h1>
         {isAdmin && (
-          <button
-            onClick={downloadAll}
-            disabled={downloadingAll}
-            className="text-xs px-3 py-1.5 rounded border border-navy/30 text-navy/70 hover:border-gold disabled:opacity-50"
-          >
-            {downloadingAll ? "Downloading…" : "Download All for Offline"}
-          </button>
+          <div className="flex items-center gap-2">
+            <a
+              href="/admin/catalogue"
+              className="text-xs px-3 py-1.5 rounded border border-navy/30 text-navy/70 hover:border-gold"
+            >
+              Manage catalogue
+            </a>
+            <button
+              onClick={downloadAll}
+              disabled={downloadingAll}
+              className="text-xs px-3 py-1.5 rounded border border-navy/30 text-navy/70 hover:border-gold disabled:opacity-50"
+            >
+              {downloadingAll ? "Downloading…" : "Download All for Offline"}
+            </button>
+          </div>
         )}
       </div>
 
@@ -407,27 +482,68 @@ export default function LibraryPage() {
         />
       </div>
 
-      <div className="flex flex-wrap gap-2 mb-6">
-        {categories.map((c) => (
-          <button
-            key={c}
-            onClick={() => setActiveCategory(c)}
-            className={`text-sm px-3 py-1 rounded-full border ${
-              activeCategory === c
-                ? "bg-navy text-paper border-navy"
-                : "border-navy/30 text-navy/70 hover:border-navy"
-            }`}
-          >
-            {c}
-          </button>
-        ))}
-      </div>
+      {hasFolders ? (
+        <div className="mb-6">
+          <div className="flex flex-wrap items-center gap-1 text-sm text-navy/70 mb-3">
+            <button
+              onClick={() => setCurrentFolder(null)}
+              className={activeFolder ? "underline hover:text-gold" : "font-medium text-navy"}
+            >
+              All files
+            </button>
+            {breadcrumb.map((f, i) => (
+              <span key={f.id} className="flex items-center gap-1">
+                <span aria-hidden>/</span>
+                <button
+                  onClick={() => setCurrentFolder(f.id)}
+                  className={
+                    i === breadcrumb.length - 1
+                      ? "font-medium text-navy"
+                      : "underline hover:text-gold"
+                  }
+                >
+                  {f.name}
+                </button>
+              </span>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {sortedChildren(activeFolder).map((f) => (
+              <button
+                key={f.id}
+                onClick={() => setCurrentFolder(f.id)}
+                className="text-sm px-3 py-1 rounded-full border border-navy/30 text-navy/70 hover:border-navy"
+              >
+                {f.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2 mb-6">
+          {categories.map((c) => (
+            <button
+              key={c}
+              onClick={() => setActiveCategory(c)}
+              className={`text-sm px-3 py-1 rounded-full border ${
+                activeCategory === c
+                  ? "bg-navy text-paper border-navy"
+                  : "border-navy/30 text-navy/70 hover:border-navy"
+              }`}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
 
       {loading ? (
         <p className="text-navy/50 text-sm">Loading…</p>
       ) : filtered.length === 0 ? (
         <p className="text-navy/50 text-sm">
-          Nothing here yet. Use "Upload" to add your first guide.
+          {hasFolders && activeFolder
+            ? "No files in this folder yet."
+            : 'Nothing here yet. Use "Upload" to add your first guide.'}
         </p>
       ) : (
         <div className="grid sm:grid-cols-2 gap-4">
