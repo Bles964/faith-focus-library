@@ -29,6 +29,11 @@ export default function LibraryPage() {
   const [links, setLinks] = useState<Link[]>([]);
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [movingDoc, setMovingDoc] = useState<Doc | null>(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkFolderIds, setBulkFolderIds] = useState<string[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | "All">("All");
@@ -219,6 +224,38 @@ export default function LibraryPage() {
     if (fd) setFolders(fd as Folder[]);
     const { data: ld } = await supabase.from("document_folders").select("document_id,folder_id");
     if (ld) setLinks(ld as Link[]);
+  }
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function endSelecting() {
+    setSelectMode(false);
+    setSelected(new Set());
+    setBulkOpen(false);
+    setBulkFolderIds([]);
+  }
+
+  // Adds the chosen files to the chosen folders (keeps any folders they are already in)
+  async function applyBulk() {
+    if (selected.size === 0 || bulkFolderIds.length === 0) return;
+    setBulkBusy(true);
+    const rows = Array.from(selected).flatMap((document_id) =>
+      bulkFolderIds.map((folder_id) => ({ document_id, folder_id }))
+    );
+    const { error } = await supabase
+      .from("document_folders")
+      .upsert(rows, { onConflict: "document_id,folder_id" });
+    setBulkBusy(false);
+    if (error) return alert(error.message ?? "Could not put the files in those folders.");
+    await reloadFolders();
+    endSelecting();
   }
 
   async function createFolder() {
@@ -502,6 +539,12 @@ export default function LibraryPage() {
         {isAdmin && (
           <div className="flex items-center gap-2">
             <button
+              onClick={() => (selectMode ? endSelecting() : setSelectMode(true))}
+              className="text-xs px-3 py-1.5 rounded border border-navy/30 text-navy/70 hover:border-gold"
+            >
+              {selectMode ? "Cancel selecting" : "Select files"}
+            </button>
+            <button
               onClick={createFolder}
               className="text-xs px-3 py-1.5 rounded bg-gold text-navy font-medium"
             >
@@ -629,6 +672,17 @@ export default function LibraryPage() {
                 key={doc.id}
                 className="text-left border border-navy/15 rounded-lg p-4 bg-white hover:border-gold transition-colors"
               >
+                {selectMode && (
+                  <label className="flex items-center gap-2 mb-2 text-sm text-navy cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(doc.id)}
+                      onChange={() => toggleSelected(doc.id)}
+                      className="h-5 w-5 accent-[#0B1F3A]"
+                    />
+                    Select this file
+                  </label>
+                )}
                 <button onClick={() => openDoc(doc)} className="text-left w-full">
                   <span className="text-xs uppercase tracking-wide text-gold font-medium">
                     {doc.category}
@@ -729,6 +783,58 @@ export default function LibraryPage() {
             >
               Done
             </button>
+          </div>
+        </div>
+      )}
+      {selectMode && (
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-navy/20 bg-white p-3 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-sm text-navy">
+            {selected.size} {selected.size === 1 ? "file" : "files"} selected
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() =>
+                setSelected(
+                  selected.size === filtered.length ? new Set() : new Set(filtered.map((d) => d.id))
+                )
+              }
+              className="text-xs px-3 py-2 rounded border border-navy/30 text-navy/70"
+            >
+              {selected.size === filtered.length && filtered.length > 0 ? "Clear all" : "Select all shown"}
+            </button>
+            <button
+              onClick={() => setBulkOpen(true)}
+              disabled={selected.size === 0}
+              className="text-sm px-4 py-2 rounded bg-navy text-white font-medium disabled:opacity-40"
+            >
+              Put in folders
+            </button>
+          </div>
+        </div>
+      )}
+
+      {bulkOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-4">
+            <p className="font-serif text-lg text-navy mb-3">
+              Put {selected.size} {selected.size === 1 ? "file" : "files"} in
+            </p>
+            <FolderPicker value={bulkFolderIds} onChange={setBulkFolderIds} />
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={() => setBulkOpen(false)}
+                className="flex-1 rounded border border-navy/30 px-4 py-2 text-sm text-navy"
+              >
+                Back
+              </button>
+              <button
+                onClick={applyBulk}
+                disabled={bulkBusy || bulkFolderIds.length === 0}
+                className="flex-1 rounded bg-navy px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+              >
+                {bulkBusy ? "Saving…" : "Save"}
+              </button>
+            </div>
           </div>
         </div>
       )}
