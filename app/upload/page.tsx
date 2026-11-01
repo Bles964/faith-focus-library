@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabaseClient";
+import FolderPicker, { saveDocumentFolders } from "@/components/FolderPicker";
 
 const CATEGORIES = ["MCQs", "Medicine", "Surgery", "Obstetrics & Gynaecology", "Paediatrics", "Community Medicine", "Other"];
 
@@ -15,6 +16,7 @@ export default function UploadPage() {
   const [category, setCategory] = useState(CATEGORIES[0]);
   const [specialty, setSpecialty] = useState("");
   const [description, setDescription] = useState("");
+  const [folderIds, setFolderIds] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -47,20 +49,33 @@ export default function UploadPage() {
       return;
     }
 
-    const { error: dbError } = await supabase.from("documents").insert({
-      title: title || file.name.replace(/\.pdf$/i, ""),
-      category,
-      specialty: specialty || null,
-      description: description || null,
-      file_path: filePath,
-      file_size_bytes: file.size,
-      uploaded_by: user.id,
-    });
+    const { data: inserted, error: dbError } = await supabase
+      .from("documents")
+      .insert({
+        title: title || file.name.replace(/\.pdf$/i, ""),
+        category,
+        specialty: specialty || null,
+        description: description || null,
+        file_path: filePath,
+        file_size_bytes: file.size,
+        uploaded_by: user.id,
+      })
+      .select("id")
+      .single();
 
-    if (dbError) {
-      setStatus(`Saved the file, but couldn't file it into the catalog: ${dbError.message}`);
+    if (dbError || !inserted) {
+      setStatus(`Saved the file, but couldn't file it into the catalog: ${dbError?.message ?? "unknown error"}`);
       setBusy(false);
       return;
+    }
+
+    if (folderIds.length > 0) {
+      const folderError = await saveDocumentFolders(supabase as any, inserted.id, folderIds);
+      if (folderError) {
+        setStatus(`Uploaded, but couldn't place it in your folders: ${folderError.message}`);
+        setBusy(false);
+        return;
+      }
     }
 
     setStatus("Uploaded.");
@@ -71,7 +86,7 @@ export default function UploadPage() {
   return (
     <div className="max-w-lg mx-auto">
       <h1 className="font-serif text-2xl text-navy mb-1">Upload a guide</h1>
-      <p className="text-sm text-navy/60 mb-6">Add a PDF and file it into a catalog.</p>
+      <p className="text-sm text-navy/60 mb-6">Add a PDF and file it into your folders.</p>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <label className="text-sm text-navy/80">
@@ -96,8 +111,10 @@ export default function UploadPage() {
           />
         </label>
 
+        <FolderPicker value={folderIds} onChange={setFolderIds} />
+
         <label className="text-sm text-navy/80">
-          Catalog
+          Main category (used until Browse is updated)
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value)}
