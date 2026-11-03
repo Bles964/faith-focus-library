@@ -2,6 +2,7 @@
 import AutoVideoExporter from "./AutoVideoExporter";
 import PelvisStageSvg from "./PelvisStageSvg";
 import type { PelvisStage } from "./PelvisStageSvg";
+import AcuteScrotumVideo from "./AcuteScrotumVideo";
 
 const STAGES: PelvisStage[] = [
   {
@@ -86,16 +87,22 @@ const STAGES: PelvisStage[] = [
 
 export default function PelvisVideo() {
   return (
-    <div style={{ maxWidth: 480, margin: "0 auto", color: "#F4F1EA" }}>
-      <p style={{ color: "#D4AF37", fontSize: ".8rem", textTransform: "uppercase", marginBottom: 12 }}>
-        Pelvic and acetabular injuries: teaching video
-      </p>
-      <AutoVideoExporter
-        stages={STAGES}
-        StageComponent={PelvisStageSvg}
-        buttonLabel="Make pelvis video"
-        fileName="pelvis-video.mp4"
-      />
-    </div>
+    <>
+      <div style={{ maxWidth: 480, margin: "0 auto", color: "#F4F1EA" }}>
+        <p style={{ color: "#D4AF37", fontSize: ".8rem", textTransform: "uppercase", marginBottom: 12 }}>
+          Pelvic and acetabular injuries: teaching video
+        </p>
+        <AutoVideoExporter
+          stages={STAGES}
+          StageComponent={PelvisStageSvg}
+          buttonLabel="Make pelvis video"
+          fileName="pelvis-video.mp4"
+        />
+      </div>
+
+      <div style={{ maxWidth: 480, margin: "40px auto 0", paddingTop: 32, borderTop: "1px solid #2A3E5C" }}>
+        <AcuteScrotumVideo />
+      </div>
+    </>
   );
 }
