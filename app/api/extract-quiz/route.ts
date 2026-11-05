@@ -2,18 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
 
-// Tried in order. The same fast model appears twice because "high demand" errors
-// are usually temporary and a second try a few seconds later often works.
-const ATTEMPTS = [
+const MODELS = [
   "gemini-flash-lite-latest",
   "gemini-flash-latest",
-  "gemini-flash-lite-latest",
+  "gemini-2.5-flash",
 ];
 
-const TOTAL_BUDGET_MS = 56000;
-const FIRST_TRY_MS = 30000;
-const LATER_TRY_MS = 22000;
-const MAX_CHARS = 40000;
+const TOTAL_BUDGET_MS = 55000;
+const PER_TRY_MS = 25000;
+const MAX_CHARS = 60000;
 const MAX_QUESTIONS = 30;
 
 function parseJson(raw: string) {
@@ -87,22 +84,14 @@ ${source}
 """`;
 
   const failures: string[] = [];
-  let lastWasBusy = false;
 
-  for (let i = 0; i < ATTEMPTS.length; i++) {
-    const model = ATTEMPTS[i];
-
-    if (lastWasBusy && i > 0) {
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-
+  for (const model of MODELS) {
     const remaining = TOTAL_BUDGET_MS - (Date.now() - started);
-    if (remaining < 6000) {
+    if (remaining < 5000) {
       failures.push(`${model}: skipped, out of time`);
       break;
     }
-    const timeout = Math.min(i === 0 ? FIRST_TRY_MS : LATER_TRY_MS, remaining - 1000);
-    lastWasBusy = false;
+    const timeout = Math.min(PER_TRY_MS, remaining - 1000);
 
     try {
       const res = await fetch(
@@ -126,8 +115,7 @@ ${source}
 
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
-        failures.push(`${model}: HTTP ${res.status} ${errText.slice(0, 100)}`);
-        if (res.status === 503 || res.status === 429) lastWasBusy = true;
+        failures.push(`${model}: HTTP ${res.status} ${errText.slice(0, 120)}`);
         continue;
       }
 
@@ -156,7 +144,7 @@ ${source}
   }
 
   return NextResponse.json(
-    { error: "The question service is busy right now. Please try again in a minute. (" + failures.join(" | ") + ")" },
+    { error: "All models failed. " + failures.join(" | ") },
     { status: 503 }
   );
 }
