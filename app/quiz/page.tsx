@@ -22,6 +22,35 @@ type Phase = "pick" | "loading" | "quiz" | "result";
 
 const LETTERS = ["A", "B", "C", "D", "E"];
 
+// New saved-quiz name, so old short quizzes (limited to 30) are not reused
+const CACHE_PREFIX = "quiz2-";
+
+// Cut the PDF text into parts so every question gets read, however long the guide is
+function splitIntoParts(text: string, size = 12000, overlap = 700): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + size, text.length);
+    if (end < text.length) {
+      const window = text.slice(Math.max(start, end - 800), end);
+      const nl = window.lastIndexOf("\n");
+      const dot = window.lastIndexOf(". ");
+      const cut = Math.max(nl, dot);
+      if (cut > 0) end = end - window.length + cut + 1;
+    }
+    parts.push(text.slice(start, end));
+    if (end >= text.length) break;
+    start = Math.max(end - overlap, start + 1);
+  }
+  return parts;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function questionKey(q: Question) {
+  return q.question.toLowerCase().replace(/\W+/g, " ").trim().slice(0, 90);
+}
+
 export default function QuizPage() {
   const supabase = createClient();
   const [docs, setDocs] = useState<Doc[]>([]);
@@ -78,6 +107,46 @@ export default function QuizPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, idx, voice, questions]);
 
+  // Reads one part of the PDF. Tries up to 3 times, and waits longer if the free limit was hit.
+  async function fetchPart(part: string, keyText: string, partNo: number, total: number): Promise<Question[]> {
+    let lastErr = "";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let quota = false;
+      try {
+        const res = await fetch("/api/extract-quiz", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: part, keyText }),
+        });
+        let json: any;
+        try {
+          json = await res.json();
+        } catch {
+          throw new Error(`Server didn't return JSON (status ${res.status})`);
+        }
+        if (!res.ok) {
+          quota = res.status === 429;
+          throw new Error(json.error || "Could not get the questions");
+        }
+        return (json.questions as Question[]) ?? [];
+      } catch (e: any) {
+        lastErr = e?.message || "Something went wrong";
+        if (attempt < 3) {
+          const wait = quota ? 30000 : 4000;
+          setStatus(
+            quota
+              ? `The question service needs a short rest. Waiting ${wait / 1000} seconds, then trying part ${partNo} of ${total} again...`
+              : `Part ${partNo} of ${total} is busy, trying again...`
+          );
+          await sleep(wait);
+        }
+      }
+    }
+    throw new Error(
+      `Stopped at part ${partNo} of ${total}. Your progress is saved: wait a few minutes, tap the document again, and it will carry on from here. (${lastErr.slice(0, 160)})`
+    );
+  }
+
   async function startQuiz(doc: Doc) {
     setError("");
     setCurrent(doc);
@@ -91,7 +160,7 @@ export default function QuizPage() {
     try {
       let qs: Question[] | null = null;
       try {
-        const cached = localStorage.getItem(`quiz-${doc.id}`);
+        const cached = localStorage.getItem(`${CACHE_PREFIX}${doc.id}`);
         if (cached) qs = JSON.parse(cached);
       } catch {}
 
@@ -107,25 +176,50 @@ export default function QuizPage() {
         const text = await extractPdfText(data.signedUrl);
         if (!text.trim()) throw new Error("Couldn't find any text in that PDF");
 
-        setStatus("Finding the questions... this can take up to a minute");
-        const res = await fetch("/api/extract-quiz", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        });
-        let json: any;
-        try {
-          json = await res.json();
-        } catch {
-          throw new Error(`Server didn't return JSON (status ${res.status})`);
+        const parts = splitIntoParts(text);
+        // The end of the guide often holds a separate answer key, so every part gets a copy of it
+        const keyText = text.length > 14000 ? text.slice(-6000) : "";
+
+        let fetchedAny = false;
+        const all: Question[] = [];
+        const seen = new Set<string>();
+        for (let p = 0; p < parts.length; p++) {
+          setStatus(
+            `Finding the questions... part ${p + 1} of ${parts.length}` +
+              (all.length ? ` (${all.length} found so far)` : "")
+          );
+          // Each finished part is saved, so a retry carries on instead of starting over
+          const partKey = `quizpart-${doc.id}-${text.length}-${p}`;
+          let found: Question[] | null = null;
+          try {
+            const c = localStorage.getItem(partKey);
+            if (c) found = JSON.parse(c);
+          } catch {}
+          if (!found) {
+            if (fetchedAny) await sleep(6000); // gentle pause between parts
+            found = await fetchPart(parts[p], keyText, p + 1, parts.length);
+            fetchedAny = true;
+            try {
+              localStorage.setItem(partKey, JSON.stringify(found));
+            } catch {}
+          }
+          for (const q of found) {
+            const k = questionKey(q);
+            if (!k || seen.has(k)) continue;
+            seen.add(k);
+            all.push(q);
+          }
         }
-        if (!res.ok) throw new Error(json.error || "Could not get the questions");
-        qs = json.questions as Question[];
-        if (!Array.isArray(qs) || qs.length === 0) {
+
+        qs = all;
+        if (qs.length === 0) {
           throw new Error("No multiple-choice questions were found in this document");
         }
         try {
-          localStorage.setItem(`quiz-${doc.id}`, JSON.stringify(qs));
+          localStorage.setItem(`${CACHE_PREFIX}${doc.id}`, JSON.stringify(qs));
+          for (let p = 0; p < parts.length; p++) {
+            localStorage.removeItem(`quizpart-${doc.id}-${text.length}-${p}`);
+          }
         } catch {}
       }
 
@@ -230,6 +324,9 @@ export default function QuizPage() {
       <div className="text-center py-16">
         <h1 className="font-serif text-xl text-navy mb-2">{current?.title}</h1>
         <p className="text-navy/60 text-sm">{status}</p>
+        <p className="text-navy/40 text-xs mt-3">
+          Long guides are read in parts, so this can take a few minutes the first time. Keep this page open.
+        </p>
       </div>
     );
   }
