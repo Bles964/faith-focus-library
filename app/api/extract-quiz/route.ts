@@ -1,4 +1,3 @@
-// Save as: app/api/extract-quiz/route.ts  (replace the old file)
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
@@ -14,10 +13,8 @@ const ATTEMPTS = [
 const TOTAL_BUDGET_MS = 56000;
 const FIRST_TRY_MS = 30000;
 const LATER_TRY_MS = 22000;
-// The quiz page now sends the PDF in parts, so each request is small.
-const MAX_CHARS = 20000;
-const MAX_KEY_CHARS = 8000;
-const MAX_QUESTIONS = 100;
+const MAX_CHARS = 40000;
+const MAX_QUESTIONS = 30;
 
 function parseJson(raw: string) {
   return JSON.parse(raw.replace(/```json|```/g, "").trim());
@@ -60,24 +57,18 @@ export async function POST(req: NextRequest) {
   if (!text || typeof text !== "string") {
     return NextResponse.json({ error: "Missing text" }, { status: 400 });
   }
-  // Optional: the end of the document, which often holds a separate answer key
-  const keyText =
-    typeof body?.keyText === "string" && body.keyText.trim()
-      ? body.keyText.slice(-MAX_KEY_CHARS)
-      : "";
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ error: "Server missing GEMINI_API_KEY" }, { status: 500 });
   }
 
-  const section = text.length > MAX_CHARS ? text.slice(0, MAX_CHARS) : text;
+  // MCQs usually sit near the end of a study guide, so keep the last part if the text is long
+  const source = text.length > MAX_CHARS ? text.slice(text.length - MAX_CHARS) : text;
 
-  const prompt = `The text below is one SECTION of a medical study guide. It may contain multiple-choice questions (MCQs) with options A to E. The answers may appear right after each question, or in a separate answer key${
-    keyText ? " (the end of the document is given after the section, in case the answer key is there)" : ""
-  }.
+  const prompt = `The text below is a medical study guide. It may contain multiple-choice questions (MCQs) with options A to E, and the answers may appear right after each question or in a separate answer key near the end.
 
-Your job is to EXTRACT EVERY multiple-choice question that already exists in the SECTION. Do not stop early and do not skip any. Do NOT invent, rewrite or add questions. If the SECTION has no multiple-choice questions, return an empty list. Ignore a question that is cut off at the very start or end of the SECTION.
+Your job is to EXTRACT the multiple-choice questions that already exist in the text. Do NOT invent, rewrite or add any questions. If there are no multiple-choice questions, return an empty list.
 
 For each question return:
 - "question": the question text only, without its number
@@ -85,24 +76,15 @@ For each question return:
 - "answer": the single letter of the correct option, taken from the text's own answer or answer key
 - "explanation": the short reason given in the text for the answer, or an empty string if none is given
 
-Skip any question whose answer cannot be found in the text.
+Skip any question whose answer cannot be found in the text. Return at most ${MAX_QUESTIONS} questions.
 
 Return ONLY valid JSON in this shape, with no markdown fences and no commentary:
 {"questions":[{"question":"...","options":["...","..."],"answer":"C","explanation":"..."}]}
 
-SECTION:
+Source text:
 """
-${section}
-"""${
-    keyText
-      ? `
-
-END OF DOCUMENT (may contain the answer key):
-"""
-${keyText}
-"""`
-      : ""
-  }`;
+${source}
+"""`;
 
   const failures: string[] = [];
   let lastWasBusy = false;
