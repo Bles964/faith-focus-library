@@ -1,162 +1,370 @@
-import { NextRequest, NextResponse } from "next/server";
+"use client";
 
-export const maxDuration = 60;
+import { useEffect, useState } from "react";
+import { createClient } from "@/lib/supabaseClient";
 
-// Tried in order. The same fast model appears twice because "high demand" errors
-// are usually temporary and a second try a few seconds later often works.
-const ATTEMPTS = [
-  "gemini-flash-lite-latest",
-  "gemini-flash-latest",
-  "gemini-flash-lite-latest",
-];
+type Doc = {
+  id: string;
+  title: string;
+  category: string;
+  specialty: string | null;
+  file_path: string;
+};
 
-const TOTAL_BUDGET_MS = 56000;
-const FIRST_TRY_MS = 30000;
-const LATER_TRY_MS = 22000;
-const MAX_CHARS = 40000;
-const MAX_QUESTIONS = 30;
+type Question = {
+  question: string;
+  options: string[];
+  answer: number;
+  explanation: string;
+};
 
-function parseJson(raw: string) {
-  return JSON.parse(raw.replace(/```json|```/g, "").trim());
-}
+type Phase = "pick" | "loading" | "quiz" | "result";
 
-function clean(parsed: any) {
-  const list = Array.isArray(parsed) ? parsed : parsed?.questions;
-  if (!Array.isArray(list)) return null;
-  const out: { question: string; options: string[]; answer: number; explanation: string }[] = [];
-  for (const q of list) {
-    if (!q || typeof q.question !== "string" || !Array.isArray(q.options)) continue;
-    const options = q.options
-      .map((o: any) => String(o).replace(/^\s*[A-Ea-e][.)]\s*/, "").trim())
-      .filter(Boolean);
-    if (options.length < 2) continue;
-    const letter = String(q.answer ?? "").trim().toUpperCase().charAt(0);
-    const idx = "ABCDE".indexOf(letter);
-    if (idx < 0 || idx >= options.length) continue;
-    out.push({
-      question: q.question.trim(),
-      options,
-      answer: idx,
-      explanation: typeof q.explanation === "string" ? q.explanation.trim() : "",
-    });
-    if (out.length >= MAX_QUESTIONS) break;
-  }
-  return out;
-}
+const LETTERS = ["A", "B", "C", "D", "E"];
 
-export async function POST(req: NextRequest) {
-  const started = Date.now();
+export default function QuizPage() {
+  const supabase = createClient();
+  const [docs, setDocs] = useState<Doc[]>([]);
+  const [loadingDocs, setLoadingDocs] = useState(true);
+  const [signedIn, setSignedIn] = useState(false);
+  const [phase, setPhase] = useState<Phase>("pick");
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+  const [current, setCurrent] = useState<Doc | null>(null);
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [idx, setIdx] = useState(0);
+  const [picked, setPicked] = useState<(number | null)[]>([]);
+  const [voice, setVoice] = useState(true);
 
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
-  }
-  const text = body?.text;
-  if (!text || typeof text !== "string") {
-    return NextResponse.json({ error: "Missing text" }, { status: 400 });
-  }
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ error: "Server missing GEMINI_API_KEY" }, { status: 500 });
-  }
-
-  // MCQs usually sit near the end of a study guide, so keep the last part if the text is long
-  const source = text.length > MAX_CHARS ? text.slice(text.length - MAX_CHARS) : text;
-
-  const prompt = `The text below is a medical study guide. It may contain multiple-choice questions (MCQs) with options A to E, and the answers may appear right after each question or in a separate answer key near the end.
-
-Your job is to EXTRACT the multiple-choice questions that already exist in the text. Do NOT invent, rewrite or add any questions. If there are no multiple-choice questions, return an empty list.
-
-For each question return:
-- "question": the question text only, without its number
-- "options": an array of the option texts in order (A first), without the letter prefixes
-- "answer": the single letter of the correct option, taken from the text's own answer or answer key
-- "explanation": the short reason given in the text for the answer, or an empty string if none is given
-
-Skip any question whose answer cannot be found in the text. Return at most ${MAX_QUESTIONS} questions.
-
-Return ONLY valid JSON in this shape, with no markdown fences and no commentary:
-{"questions":[{"question":"...","options":["...","..."],"answer":"C","explanation":"..."}]}
-
-Source text:
-"""
-${source}
-"""`;
-
-  const failures: string[] = [];
-  let lastWasBusy = false;
-
-  for (let i = 0; i < ATTEMPTS.length; i++) {
-    const model = ATTEMPTS[i];
-
-    if (lastWasBusy && i > 0) {
-      await new Promise((r) => setTimeout(r, 2000));
+  useEffect(() => {
+    async function load() {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      setSignedIn(!!user);
+      if (user) {
+        const { data } = await supabase
+          .from("documents")
+          .select("id,title,category,specialty,file_path")
+          .order("created_at", { ascending: false });
+        if (data) setDocs(data as Doc[]);
+      }
+      setLoadingDocs(false);
     }
+    load();
+    return () => {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        speechSynthesis.cancel();
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    const remaining = TOTAL_BUDGET_MS - (Date.now() - started);
-    if (remaining < 6000) {
-      failures.push(`${model}: skipped, out of time`);
-      break;
+  function speakQuestion(q: Question) {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    speechSynthesis.cancel();
+    const text =
+      `${q.question}. ` + q.options.map((o, i) => `${LETTERS[i]}. ${o}.`).join(" ");
+    speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  }
+
+  useEffect(() => {
+    if (phase !== "quiz") return;
+    if (voice) {
+      speakQuestion(questions[idx]);
+    } else if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      speechSynthesis.cancel();
     }
-    const timeout = Math.min(i === 0 ? FIRST_TRY_MS : LATER_TRY_MS, remaining - 1000);
-    lastWasBusy = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, idx, voice, questions]);
+
+  async function startQuiz(doc: Doc) {
+    setError("");
+    setCurrent(doc);
+    setPhase("loading");
+
+    // Unlock speech on phones while the tap is still fresh
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      speechSynthesis.speak(new SpeechSynthesisUtterance(""));
+    }
 
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-goog-api-key": apiKey,
-          },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              responseMimeType: "application/json",
-              maxOutputTokens: 8192,
-            },
-          }),
-          signal: AbortSignal.timeout(timeout),
-        }
-      );
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "");
-        failures.push(`${model}: HTTP ${res.status} ${errText.slice(0, 100)}`);
-        if (res.status === 503 || res.status === 429) lastWasBusy = true;
-        continue;
-      }
-
-      const data = await res.json();
-      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-
-      let parsed: any;
+      let qs: Question[] | null = null;
       try {
-        parsed = parseJson(rawText);
-      } catch {
-        failures.push(`${model}: returned invalid JSON`);
-        continue;
+        const cached = localStorage.getItem(`quiz-${doc.id}`);
+        if (cached) qs = JSON.parse(cached);
+      } catch {}
+
+      if (!qs) {
+        setStatus("Opening the PDF...");
+        const { data, error: urlErr } = await supabase.storage
+          .from("library-pdfs")
+          .createSignedUrl(doc.file_path, 60 * 5);
+        if (!data?.signedUrl) throw new Error(urlErr?.message ?? "Could not open this file");
+
+        setStatus("Reading the PDF...");
+        const { extractPdfText } = await import("@/lib/pdfText");
+        const text = await extractPdfText(data.signedUrl);
+        if (!text.trim()) throw new Error("Couldn't find any text in that PDF");
+
+        setStatus("Finding the questions... this can take up to a minute");
+        const res = await fetch("/api/extract-quiz", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        let json: any;
+        try {
+          json = await res.json();
+        } catch {
+          throw new Error(`Server didn't return JSON (status ${res.status})`);
+        }
+        if (!res.ok) throw new Error(json.error || "Could not get the questions");
+        qs = json.questions as Question[];
+        if (!Array.isArray(qs) || qs.length === 0) {
+          throw new Error("No multiple-choice questions were found in this document");
+        }
+        try {
+          localStorage.setItem(`quiz-${doc.id}`, JSON.stringify(qs));
+        } catch {}
       }
 
-      const questions = clean(parsed);
-      if (questions === null) {
-        failures.push(`${model}: unexpected response shape`);
-        continue;
-      }
-
-      return NextResponse.json({ questions });
+      const final = qs as Question[];
+      setQuestions(final);
+      setPicked(final.map(() => null));
+      setIdx(0);
+      setPhase("quiz");
     } catch (e: any) {
-      const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";
-      failures.push(`${model}: ${timedOut ? "timed out" : e?.message || "network error"}`);
+      setError(e?.message || "Something went wrong");
+      setPhase("pick");
     }
   }
 
-  return NextResponse.json(
-    { error: "The question service is busy right now. Please try again in a minute. (" + failures.join(" | ") + ")" },
-    { status: 503 }
+  function choose(i: number) {
+    setPicked((prev) => {
+      const next = [...prev];
+      next[idx] = i;
+      return next;
+    });
+  }
+
+  function next() {
+    if (idx < questions.length - 1) {
+      setIdx(idx + 1);
+    } else {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        speechSynthesis.cancel();
+      }
+      setPhase("result");
+    }
+  }
+
+  function back() {
+    if (idx > 0) setIdx(idx - 1);
+  }
+
+  function restart() {
+    setPicked(questions.map(() => null));
+    setIdx(0);
+    setPhase("quiz");
+  }
+
+  function backToList() {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      speechSynthesis.cancel();
+    }
+    setPhase("pick");
+    setCurrent(null);
+    setQuestions([]);
+  }
+
+  if (!signedIn && !loadingDocs) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-navy/70 mb-3">Sign in to take a quiz.</p>
+        <a href="/login" className="text-gold underline">Go to sign in</a>
+      </div>
+    );
+  }
+
+  /* ---------- Pick a document ---------- */
+  if (phase === "pick") {
+    return (
+      <div>
+        <h1 className="font-serif text-2xl text-navy mb-1">Quiz</h1>
+        <p className="text-sm text-navy/60 mb-5">
+          Pick a document. The quiz uses the multiple-choice questions already inside it.
+        </p>
+        {error && (
+          <p className="text-sm text-red-600 mb-4 border border-red-200 rounded p-3">{error}</p>
+        )}
+        {loadingDocs ? (
+          <p className="text-navy/50 text-sm">Loading…</p>
+        ) : docs.length === 0 ? (
+          <p className="text-navy/50 text-sm">No documents yet.</p>
+        ) : (
+          <div className="grid sm:grid-cols-2 gap-3">
+            {docs.map((d) => (
+              <button
+                key={d.id}
+                onClick={() => startQuiz(d)}
+                className="text-left border border-navy/15 rounded-lg p-4 bg-white hover:border-gold transition-colors"
+              >
+                <span className="text-xs uppercase tracking-wide text-gold font-medium">
+                  {d.category}
+                  {d.specialty ? ` · ${d.specialty}` : ""}
+                </span>
+                <h2 className="font-serif text-lg text-navy mt-1">{d.title}</h2>
+                <span className="text-xs text-navy/50">Tap to start the quiz</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* ---------- Loading ---------- */
+  if (phase === "loading") {
+    return (
+      <div className="text-center py-16">
+        <h1 className="font-serif text-xl text-navy mb-2">{current?.title}</h1>
+        <p className="text-navy/60 text-sm">{status}</p>
+      </div>
+    );
+  }
+
+  /* ---------- Result ---------- */
+  if (phase === "result") {
+    const score = picked.filter((p, i) => p === questions[i].answer).length;
+    const total = questions.length;
+    const pct = Math.round((score / total) * 100);
+    const msg =
+      pct >= 80
+        ? "Excellent work."
+        : pct >= 50
+        ? "Good effort. Review the ones below."
+        : "Keep going. Re-read the guide and try again.";
+    const wrong = questions
+      .map((q, i) => ({ q, i, p: picked[i] }))
+      .filter((x) => x.p !== x.q.answer);
+
+    return (
+      <div>
+        <h1 className="font-serif text-2xl text-navy mb-1">Your score</h1>
+        <p className="text-sm text-navy/60 mb-4">{current?.title}</p>
+        <div className="border border-navy/15 rounded-lg bg-white p-6 text-center mb-6">
+          <p className="font-serif text-4xl text-navy">
+            {score} / {total}
+          </p>
+          <p className="text-gold font-medium mt-1">{pct}%</p>
+          <p className="text-sm text-navy/70 mt-2">{msg}</p>
+        </div>
+
+        {wrong.length === 0 ? (
+          <p className="text-sm text-navy/70 mb-6">You got every question right.</p>
+        ) : (
+          <div className="mb-6">
+            <h2 className="font-serif text-lg text-navy mb-3">Review</h2>
+            <div className="space-y-3">
+              {wrong.map(({ q, i, p }) => (
+                <div key={i} className="border border-navy/15 rounded-lg bg-white p-4 text-sm">
+                  <p className="text-navy font-medium mb-2">
+                    {i + 1}. {q.question}
+                  </p>
+                  <p className="text-red-600">
+                    Your answer: {p === null ? "no answer" : `${LETTERS[p]}. ${q.options[p]}`}
+                  </p>
+                  <p className="text-green-700">
+                    Correct: {LETTERS[q.answer]}. {q.options[q.answer]}
+                  </p>
+                  {q.explanation && <p className="text-navy/60 mt-1">{q.explanation}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <button onClick={restart} className="px-4 py-2 rounded bg-navy text-paper text-sm">
+            Retake quiz
+          </button>
+          <button
+            onClick={backToList}
+            className="px-4 py-2 rounded border border-navy/30 text-navy/70 text-sm"
+          >
+            Choose another document
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------- Quiz ---------- */
+  const q = questions[idx];
+  const selected = picked[idx];
+  const progress = Math.round(((idx + 1) / questions.length) * 100);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs text-navy/60">
+          Question {idx + 1} of {questions.length}
+        </p>
+        <div className="flex gap-3">
+          <button
+            onClick={() => speakQuestion(q)}
+            className="text-xs text-navy/60 hover:text-gold underline"
+          >
+            Replay
+          </button>
+          <button
+            onClick={() => setVoice((v) => !v)}
+            className="text-xs text-navy/60 hover:text-gold underline"
+          >
+            {voice ? "Voice on" : "Voice off"}
+          </button>
+        </div>
+      </div>
+      <div className="h-1.5 bg-navy/10 rounded mb-5">
+        <div className="h-1.5 bg-gold rounded" style={{ width: `${progress}%` }} />
+      </div>
+
+      <h2 className="font-serif text-lg text-navy mb-4">{q.question}</h2>
+
+      <div className="space-y-2 mb-6">
+        {q.options.map((o, i) => (
+          <button
+            key={i}
+            onClick={() => choose(i)}
+            className={`w-full text-left border rounded-lg px-4 py-3 text-sm transition-colors ${
+              selected === i
+                ? "bg-navy text-paper border-navy"
+                : "bg-white text-navy border-navy/20 hover:border-gold"
+            }`}
+          >
+            <span className="font-medium mr-2">{LETTERS[i]}.</span>
+            {o}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex justify-between">
+        <button
+          onClick={back}
+          disabled={idx === 0}
+          className="px-4 py-2 rounded border border-navy/30 text-navy/70 text-sm disabled:opacity-40"
+        >
+          Back
+        </button>
+        <button
+          onClick={next}
+          disabled={selected === null}
+          className="px-4 py-2 rounded bg-navy text-paper text-sm disabled:opacity-40"
+        >
+          {idx === questions.length - 1 ? "Finish" : "Next"}
+        </button>
+      </div>
+    </div>
   );
 }
