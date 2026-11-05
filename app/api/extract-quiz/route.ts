@@ -1,17 +1,23 @@
+// Save as: app/api/extract-quiz/route.ts  (replace the old file)
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
 
-const MODELS = [
+// Tried in order. The same fast model appears twice because "high demand" errors
+// are usually temporary and a second try a few seconds later often works.
+const ATTEMPTS = [
   "gemini-flash-lite-latest",
   "gemini-flash-latest",
-  "gemini-2.5-flash",
+  "gemini-flash-lite-latest",
 ];
 
-const TOTAL_BUDGET_MS = 55000;
-const PER_TRY_MS = 25000;
-const MAX_CHARS = 60000;
-const MAX_QUESTIONS = 30;
+const TOTAL_BUDGET_MS = 56000;
+const FIRST_TRY_MS = 30000;
+const LATER_TRY_MS = 22000;
+// The quiz page now sends the PDF in parts, so each request is small.
+const MAX_CHARS = 20000;
+const MAX_KEY_CHARS = 8000;
+const MAX_QUESTIONS = 100;
 
 function parseJson(raw: string) {
   return JSON.parse(raw.replace(/```json|```/g, "").trim());
@@ -54,18 +60,24 @@ export async function POST(req: NextRequest) {
   if (!text || typeof text !== "string") {
     return NextResponse.json({ error: "Missing text" }, { status: 400 });
   }
+  // Optional: the end of the document, which often holds a separate answer key
+  const keyText =
+    typeof body?.keyText === "string" && body.keyText.trim()
+      ? body.keyText.slice(-MAX_KEY_CHARS)
+      : "";
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ error: "Server missing GEMINI_API_KEY" }, { status: 500 });
   }
 
-  // MCQs usually sit near the end of a study guide, so keep the last part if the text is long
-  const source = text.length > MAX_CHARS ? text.slice(text.length - MAX_CHARS) : text;
+  const section = text.length > MAX_CHARS ? text.slice(0, MAX_CHARS) : text;
 
-  const prompt = `The text below is a medical study guide. It may contain multiple-choice questions (MCQs) with options A to E, and the answers may appear right after each question or in a separate answer key near the end.
+  const prompt = `The text below is one SECTION of a medical study guide. It may contain multiple-choice questions (MCQs) with options A to E. The answers may appear right after each question, or in a separate answer key${
+    keyText ? " (the end of the document is given after the section, in case the answer key is there)" : ""
+  }.
 
-Your job is to EXTRACT the multiple-choice questions that already exist in the text. Do NOT invent, rewrite or add any questions. If there are no multiple-choice questions, return an empty list.
+Your job is to EXTRACT EVERY multiple-choice question that already exists in the SECTION. Do not stop early and do not skip any. Do NOT invent, rewrite or add questions. If the SECTION has no multiple-choice questions, return an empty list. Ignore a question that is cut off at the very start or end of the SECTION.
 
 For each question return:
 - "question": the question text only, without its number
@@ -73,25 +85,49 @@ For each question return:
 - "answer": the single letter of the correct option, taken from the text's own answer or answer key
 - "explanation": the short reason given in the text for the answer, or an empty string if none is given
 
-Skip any question whose answer cannot be found in the text. Return at most ${MAX_QUESTIONS} questions.
+Skip any question whose answer cannot be found in the text.
 
 Return ONLY valid JSON in this shape, with no markdown fences and no commentary:
 {"questions":[{"question":"...","options":["...","..."],"answer":"C","explanation":"..."}]}
 
-Source text:
+SECTION:
 """
-${source}
-"""`;
+${section}
+"""${
+    keyText
+      ? `
+
+END OF DOCUMENT (may contain the answer key):
+"""
+${keyText}
+"""`
+      : ""
+  }`;
 
   const failures: string[] = [];
+  const quotaModels = new Set<string>();
+  let lastWasBusy = false;
 
-  for (const model of MODELS) {
+  for (let i = 0; i < ATTEMPTS.length; i++) {
+    const model = ATTEMPTS[i];
+
+    // A model that already said "quota used up" will say it again, so don't waste a request on it
+    if (quotaModels.has(model)) {
+      failures.push(`${model}: skipped, quota used up`);
+      continue;
+    }
+
+    if (lastWasBusy && i > 0) {
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
     const remaining = TOTAL_BUDGET_MS - (Date.now() - started);
-    if (remaining < 5000) {
+    if (remaining < 6000) {
       failures.push(`${model}: skipped, out of time`);
       break;
     }
-    const timeout = Math.min(PER_TRY_MS, remaining - 1000);
+    const timeout = Math.min(i === 0 ? FIRST_TRY_MS : LATER_TRY_MS, remaining - 1000);
+    lastWasBusy = false;
 
     try {
       const res = await fetch(
@@ -115,7 +151,9 @@ ${source}
 
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
-        failures.push(`${model}: HTTP ${res.status} ${errText.slice(0, 120)}`);
+        failures.push(`${model}: HTTP ${res.status} ${errText.slice(0, 100)}`);
+        if (res.status === 429) quotaModels.add(model);
+        if (res.status === 503 || res.status === 429) lastWasBusy = true;
         continue;
       }
 
@@ -143,8 +181,17 @@ ${source}
     }
   }
 
+  const quotaHit = failures.some((f) => f.includes("HTTP 429"));
   return NextResponse.json(
-    { error: "All models failed. " + failures.join(" | ") },
-    { status: 503 }
+    {
+      error: quotaHit
+        ? "The question service has reached its free usage limit for now. Wait a few minutes and try again. (" +
+          failures.join(" | ").slice(0, 300) +
+          ")"
+        : "The question service is busy right now. Please try again in a minute. (" +
+          failures.join(" | ").slice(0, 300) +
+          ")",
+    },
+    { status: quotaHit ? 429 : 503 }
   );
 }
