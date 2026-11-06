@@ -5,11 +5,12 @@ import { PLANS } from "@/lib/plans";
 
 export const runtime = "nodejs";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+// .trim() removes stray spaces or line breaks that can sneak in when a key is pasted into Vercel
+const SUPABASE_URL = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim().replace(/\/+$/, "");
 
 export async function POST(req: Request) {
-  const secret = process.env.PAYSTACK_SECRET_KEY;
-  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const secret = (process.env.PAYSTACK_SECRET_KEY || "").trim();
+  const service = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
   if (!secret || !service) return NextResponse.json({ error: "Server not set up." }, { status: 500 });
 
   // 1) Make sure this really came from Paystack
