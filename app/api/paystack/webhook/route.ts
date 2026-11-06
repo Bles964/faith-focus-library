@@ -52,7 +52,12 @@ export async function POST(req: Request) {
   const email: string = v.data.customer?.email ?? "";
   const rpc = await fetch(`${SUPABASE_URL}/rest/v1/rpc/grant_access`, {
     method: "POST",
-    headers: { apikey: service, Authorization: `Bearer ${service}`, "content-type": "application/json" },
+    headers: {
+      apikey: service,
+      // New-style secret keys (sb_secret_...) go in "apikey" only; the old service_role key is also sent as a Bearer token
+      ...(service.startsWith("sb_") ? {} : { Authorization: `Bearer ${service}` }),
+      "content-type": "application/json",
+    },
     body: JSON.stringify({
       p_user: userId,
       p_email: email,
