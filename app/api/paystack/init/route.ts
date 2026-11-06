@@ -2,12 +2,13 @@
 import { NextResponse } from "next/server";
 import { PLANS } from "@/lib/plans";
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+// .trim() removes stray spaces or line breaks that can sneak in when a key is pasted into Vercel
+const SUPABASE_URL = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim().replace(/\/+$/, "");
+const SUPABASE_ANON = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
 
 export async function POST(req: Request) {
   try {
-    const secret = process.env.PAYSTACK_SECRET_KEY;
+    const secret = (process.env.PAYSTACK_SECRET_KEY || "").trim();
     if (!secret) return NextResponse.json({ error: "PAYSTACK_SECRET_KEY is not set." }, { status: 500 });
 
     const token = (req.headers.get("authorization") || "").replace("Bearer ", "").trim();
