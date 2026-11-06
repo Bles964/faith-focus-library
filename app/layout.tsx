@@ -8,6 +8,7 @@ import WelcomeBot from "@/components/WelcomeBot";
 import ActivityTracker from "@/components/ActivityTracker";
 import AnnouncementBanner from "@/components/AnnouncementBanner";
 import Footer from "@/components/Footer";
+import AccessGate from "@/components/AccessGate";
 
 export const metadata: Metadata = {
   title: "Faith and Focus Academy | Exam preparation for medical students",
@@ -28,7 +29,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
           </header>
           <AnnouncementBanner />
-          <main className="flex-1 max-w-5xl w-full mx-auto px-5 py-8">{children}</main>
+          <main className="flex-1 max-w-5xl w-full mx-auto px-5 py-8">
+            <AccessGate>{children}</AccessGate>
+          </main>
           <Footer />
           <LockInPill />
           <WelcomeBot />
