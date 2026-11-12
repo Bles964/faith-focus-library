@@ -708,6 +708,12 @@ export default function LibraryPage() {
                     {isSpeaking ? "Stop" : "Listen"}
                   </button>
                   <a
+                    href={`/quiz?doc=${doc.id}`}
+                    className="text-xs text-navy/60 hover:text-gold underline"
+                  >
+                    Quiz
+                  </a>
+                  <a
                     href={`/flashcards?doc=${doc.id}`}
                     className="text-xs text-navy/60 hover:text-gold underline"
                   >
