@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabaseClient";
 
 type Doc = {
@@ -64,6 +64,7 @@ export default function QuizPage() {
   const [idx, setIdx] = useState(0);
   const [picked, setPicked] = useState<(number | null)[]>([]);
   const [voice, setVoice] = useState(true);
+  const autoStarted = useRef(false);
 
   useEffect(() => {
     async function load() {
@@ -76,7 +77,18 @@ export default function QuizPage() {
           .from("documents")
           .select("id,title,category,specialty,file_path")
           .order("created_at", { ascending: false });
-        if (data) setDocs(data as Doc[]);
+        if (data) {
+          setDocs(data as Doc[]);
+          // Opened from a file's "Quiz" button: start that file's quiz straight away
+          const wanted = new URLSearchParams(window.location.search).get("doc");
+          const match = wanted ? (data as Doc[]).find((x) => x.id === wanted) : null;
+          if (match && !autoStarted.current) {
+            autoStarted.current = true;
+            setLoadingDocs(false);
+            startQuiz(match);
+            return;
+          }
+        }
       }
       setLoadingDocs(false);
     }
