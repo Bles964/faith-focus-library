@@ -155,6 +155,12 @@ export default function AutoVideoExporter<T extends BaseStage>({
   const [autoSave, setAutoSave] = useState(true);
   const autoSaveRef = useRef(true);
 
+  // Which PDF this video belongs to (admin only), so it shows on that file for students
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [docOptions, setDocOptions] = useState<{ id: string; title: string }[]>([]);
+  const [linkDocId, setLinkDocId] = useState("");
+  const linkDocRef = useRef("");
+
   useEffect(() => {
     try {
       if (localStorage.getItem("ffl-autosave-videos") === "0") {
@@ -172,6 +178,35 @@ export default function AutoVideoExporter<T extends BaseStage>({
         setTitle(t);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data: profile } = await supabase.from("profiles").select("is_admin").eq("id", user.id).single();
+        if (!profile?.is_admin || cancelled) return;
+        setIsAdmin(true);
+        const { data: docs } = await supabase.from("documents").select("id,title").order("title");
+        if (!cancelled && docs) setDocOptions(docs as { id: string; title: string }[]);
+        try {
+          const saved = localStorage.getItem(`ffl-video-doc-${fileName}`);
+          if (saved) {
+            setLinkDocId(saved);
+            linkDocRef.current = saved;
+          }
+        } catch {}
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -507,6 +542,9 @@ export default function AutoVideoExporter<T extends BaseStage>({
         .upload(path, blob, { contentType: "video/mp4", upsert: false });
       if (upErr) throw new Error(upErr.message);
 
+      // The PDF this video belongs to (only sent when one was chosen)
+      const linkFields = linkDocRef.current ? { document_id: linkDocRef.current } : {};
+
       // Building the same video again replaces the saved copy instead of adding a duplicate
       let replaced = false;
       if (titleSourceRef.current === "heading") {
@@ -520,7 +558,7 @@ export default function AutoVideoExporter<T extends BaseStage>({
         if (old) {
           const { error: updErr } = await supabase
             .from("exam_videos")
-            .update({ file_path: path })
+            .update({ file_path: path, ...linkFields })
             .eq("id", old.id);
           if (updErr) {
             await supabase.storage.from("exam-videos").remove([path]);
@@ -537,6 +575,7 @@ export default function AutoVideoExporter<T extends BaseStage>({
           category: "Teaching videos",
           description: null,
           file_path: path,
+          ...linkFields,
         });
         if (dbErr) {
           await supabase.storage.from("exam-videos").remove([path]);
@@ -596,6 +635,41 @@ export default function AutoVideoExporter<T extends BaseStage>({
         />
         Save to the library automatically when ready
       </label>
+
+      {isAdmin && docOptions.length > 0 && (
+        <label style={{ display: "block", marginTop: 10, color: "#9AA6B8", fontSize: ".8rem" }}>
+          Show this video on which PDF? (optional)
+          <select
+            value={linkDocId}
+            disabled={busy}
+            onChange={(e) => {
+              setLinkDocId(e.target.value);
+              linkDocRef.current = e.target.value;
+              try {
+                localStorage.setItem(`ffl-video-doc-${fileName}`, e.target.value);
+              } catch {}
+            }}
+            style={{
+              display: "block",
+              width: "100%",
+              marginTop: 4,
+              padding: "8px 10px",
+              borderRadius: 8,
+              border: "1px solid #2A3E5C",
+              background: "#0B1F3A",
+              color: "#F4F1EA",
+              fontSize: ".85rem",
+            }}
+          >
+            <option value="">No PDF</option>
+            {docOptions.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       <button
         onClick={() => setShowVoice((v) => !v)}
