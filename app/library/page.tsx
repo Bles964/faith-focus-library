@@ -17,6 +17,7 @@ type Doc = {
 
 type Folder = { id: string; parent_id: string | null; name: string; sort_order: number };
 type Link = { document_id: string; folder_id: string };
+type Video = { id: string; title: string; file_path: string; document_id: string | null };
 
 const CACHE_NAME = "library-pdfs-v1";
 
@@ -34,6 +35,10 @@ export default function LibraryPage() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkFolderIds, setBulkFolderIds] = useState<string[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [videos, setVideos] = useState<Video[]>([]);
+  const [watchDoc, setWatchDoc] = useState<Doc | null>(null);
+  const [playing, setPlaying] = useState<{ title: string; url: string | null; error?: string } | null>(null);
+  const [linkDoc, setLinkDoc] = useState<Doc | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | "All">("All");
@@ -104,6 +109,13 @@ export default function LibraryPage() {
         .from("document_folders")
         .select("document_id,folder_id");
       if (linkData) setLinks(linkData as Link[]);
+
+      // Videos attached to files (stays empty until the video-link SQL has been run)
+      const { data: videoData } = await supabase
+        .from("exam_videos")
+        .select("id,title,file_path,document_id")
+        .order("created_at", { ascending: false });
+      if (videoData) setVideos(videoData as Video[]);
 
       setLoading(false);
 
@@ -284,6 +296,34 @@ export default function LibraryPage() {
     if (error) return alert(error.message ?? "Could not delete the folder.");
     setCurrentFolder(f.parent_id);
     reloadFolders();
+  }
+
+  const videosFor = (docId: string) => videos.filter((v) => v.document_id === docId);
+
+  async function playVideo(v: Video) {
+    setWatchDoc(null);
+    setPlaying({ title: v.title, url: null });
+    const { data, error } = await supabase.storage.from("exam-videos").createSignedUrl(v.file_path, 60 * 60);
+    if (data?.signedUrl) {
+      setPlaying({ title: v.title, url: data.signedUrl });
+      return;
+    }
+    const pub = supabase.storage.from("exam-videos").getPublicUrl(v.file_path);
+    if (pub?.data?.publicUrl) setPlaying({ title: v.title, url: pub.data.publicUrl });
+    else setPlaying({ title: v.title, url: null, error: error?.message ?? "Could not open this video." });
+  }
+
+  function openWatch(doc: Doc) {
+    const list = videosFor(doc.id);
+    if (list.length === 1) playVideo(list[0]);
+    else setWatchDoc(doc);
+  }
+
+  async function toggleVideoLink(v: Video, doc: Doc) {
+    const next = v.document_id === doc.id ? null : doc.id;
+    const { error } = await supabase.from("exam_videos").update({ document_id: next }).eq("id", v.id);
+    if (error) return alert(error.message ?? "Could not change the video link.");
+    setVideos((prev) => prev.map((x) => (x.id === v.id ? { ...x, document_id: next } : x)));
   }
 
   async function getCachedBlobUrl(doc: Doc): Promise<string | null> {
@@ -707,6 +747,14 @@ export default function LibraryPage() {
                   >
                     {isSpeaking ? "Stop" : "Listen"}
                   </button>
+                  {videosFor(doc.id).length > 0 && (
+                    <button
+                      onClick={() => openWatch(doc)}
+                      className="text-xs text-navy/60 hover:text-gold underline"
+                    >
+                      Watch video
+                    </button>
+                  )}
                   <a
                     href={`/quiz?doc=${doc.id}`}
                     className="text-xs text-navy/60 hover:text-gold underline"
@@ -737,6 +785,12 @@ export default function LibraryPage() {
                   )}
                   {isAdmin && (
                     <>
+                      <button
+                        onClick={() => setLinkDoc(doc)}
+                        className="text-xs text-navy/60 hover:text-gold underline"
+                      >
+                        Link video
+                      </button>
                       {hasFolders && (
                         <button
                           onClick={() => setMovingDoc(doc)}
@@ -847,6 +901,88 @@ export default function LibraryPage() {
                 {bulkBusy ? "Saving…" : "Save"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {watchDoc && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-4">
+            <p className="font-serif text-lg text-navy mb-3">Videos for {watchDoc.title}</p>
+            <div className="space-y-2">
+              {videosFor(watchDoc.id).map((v) => (
+                <button
+                  key={v.id}
+                  onClick={() => playVideo(v)}
+                  className="w-full text-left border border-navy/20 rounded px-3 py-2 text-sm text-navy hover:border-gold"
+                >
+                  {v.title}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setWatchDoc(null)}
+              className="mt-4 w-full rounded border border-navy/30 px-4 py-2 text-sm text-navy"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {playing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-xl rounded-lg bg-white p-3">
+            <p className="font-serif text-base text-navy mb-2">{playing.title}</p>
+            {playing.url ? (
+              <video src={playing.url} controls playsInline autoPlay className="w-full rounded bg-black" />
+            ) : playing.error ? (
+              <p className="text-sm text-red-600">{playing.error}</p>
+            ) : (
+              <p className="text-sm text-navy/60">Loading the video…</p>
+            )}
+            <button
+              onClick={() => setPlaying(null)}
+              className="mt-3 w-full rounded border border-navy/30 px-4 py-2 text-sm text-navy"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {linkDoc && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md max-h-[80vh] overflow-y-auto rounded-lg bg-white p-4">
+            <p className="font-serif text-lg text-navy mb-1">Videos for {linkDoc.title}</p>
+            <p className="text-xs text-navy/60 mb-3">Tick the videos that belong to this file. Students will see a Watch video link.</p>
+            {videos.length === 0 ? (
+              <p className="text-sm text-navy/60">No saved videos yet, or the video-link setup has not been run.</p>
+            ) : (
+              <div className="space-y-2">
+                {videos.map((v) => (
+                  <label key={v.id} className="flex items-start gap-2 text-sm text-navy cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={v.document_id === linkDoc.id}
+                      onChange={() => toggleVideoLink(v, linkDoc)}
+                      className="mt-0.5 h-4 w-4 accent-[#0B1F3A]"
+                    />
+                    <span>
+                      {v.title}
+                      {v.document_id && v.document_id !== linkDoc.id && (
+                        <span className="text-xs text-navy/50"> (linked to another file)</span>
+                      )}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={() => setLinkDoc(null)}
+              className="mt-4 w-full rounded bg-navy px-4 py-2 text-sm font-medium text-white"
+            >
+              Done
+            </button>
           </div>
         </div>
       )}
