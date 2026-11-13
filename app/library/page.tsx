@@ -17,7 +17,14 @@ type Doc = {
 
 type Folder = { id: string; parent_id: string | null; name: string; sort_order: number };
 type Link = { document_id: string; folder_id: string };
-type Video = { id: string; title: string; file_path: string | null; link: string | null; document_id: string | null };
+type Video = {
+  id: string;
+  title: string;
+  file_path: string | null;
+  link: string | null;
+  document_id: string | null;
+  raw: Record<string, any>;
+};
 
 const CACHE_NAME = "library-pdfs-v1";
 
@@ -116,15 +123,35 @@ export default function LibraryPage() {
         .select("*")
         .order("created_at", { ascending: false });
       if (videoData) {
+        const skip = new Set(["id", "title", "category", "description", "created_at", "updated_at", "document_id", "user_id"]);
         setVideos(
-          (videoData as any[]).map((r) => ({
-            id: r.id,
-            title: r.title ?? "Video",
-            file_path: r.file_path ?? null,
+          (videoData as any[]).map((r) => {
+            let path: string | null = r.file_path ?? null;
             // some videos may be saved as a web link instead of an uploaded file
-            link: r.video_url ?? r.url ?? r.link ?? r.external_url ?? null,
-            document_id: r.document_id ?? null,
-          }))
+            let link: string | null = r.video_url ?? r.url ?? r.link ?? r.external_url ?? null;
+            // If the usual fields are empty, look for any field that holds a video file name or a web link
+            if (!path && !link) {
+              for (const [k, val] of Object.entries(r)) {
+                if (skip.has(k) || typeof val !== "string") continue;
+                if (/^https?:\/\//i.test(val)) {
+                  link = val;
+                  break;
+                }
+                if (/\.(mp4|mov|webm|m4v)$/i.test(val)) {
+                  path = val;
+                  break;
+                }
+              }
+            }
+            return {
+              id: r.id,
+              title: r.title ?? "Video",
+              file_path: path,
+              link,
+              document_id: r.document_id ?? null,
+              raw: r,
+            };
+          })
         );
       }
 
@@ -370,7 +397,9 @@ export default function LibraryPage() {
         title: v.title,
         url: null,
         error:
-          "This video has no file or link saved, so there is nothing to play. Rebuild or re-upload it, then link it to this file again.",
+          "This video has no file or link saved, so there is nothing to play. Rebuild or re-upload it, then link it to this file again. (Saved fields: " +
+          Object.keys(v.raw || {}).join(", ") +
+          ")",
       });
     } catch (e: any) {
       setPlaying({ title: v.title, url: null, error: e?.message ?? "Could not open this video." });
