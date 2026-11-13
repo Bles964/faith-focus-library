@@ -29,6 +29,7 @@ function TransferPanel({
   const [planId, setPlanId] = useState(PLANS[0].id);
   const [name, setName] = useState("");
   const [note, setNote] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [copied, setCopied] = useState(false);
@@ -52,6 +53,18 @@ function TransferPanel({
       setMsg("Please type the name on the account you paid from.");
       return;
     }
+    if (!file) {
+      setMsg("Please attach your payment receipt (a screenshot or photo).");
+      return;
+    }
+    if (!(file.type.startsWith("image/") || file.type === "application/pdf")) {
+      setMsg("The receipt must be a photo, a screenshot or a PDF.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setMsg("That file is too big. Please use a receipt under 5 MB.");
+      return;
+    }
     setBusy(true);
     const {
       data: { user },
@@ -61,7 +74,21 @@ function TransferPanel({
       setMsg("Please sign in again.");
       return;
     }
+
+    // Upload the receipt first, into the student's own private folder
+    const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-60);
+    const receiptPath = `${user.id}/${Date.now()}-${safeName}`;
+    const { error: upErr } = await supabase.storage
+      .from("payment-receipts")
+      .upload(receiptPath, file, { contentType: file.type, upsert: false });
+    if (upErr) {
+      setBusy(false);
+      setMsg("Could not upload your receipt. " + (upErr.message || "Please try again."));
+      return;
+    }
+
     const { error } = await supabase.from("payment_requests").insert({
+      receipt_path: receiptPath,
       user_id: user.id,
       email: user.email,
       plan_id: plan.id,
@@ -71,6 +98,7 @@ function TransferPanel({
       note: note.trim() ? note.trim().slice(0, 200) : null,
     });
     if (error) {
+      await supabase.storage.from("payment-receipts").remove([receiptPath]);
       setBusy(false);
       setMsg(
         error.code === "23505"
@@ -131,7 +159,7 @@ function TransferPanel({
       </div>
       <p className="text-xs text-navy/50 mb-5">Use any bank app. Put your email in the transfer note if you can.</p>
 
-      <p className="text-sm font-medium text-navy mb-2">3. Tell us you have paid</p>
+      <p className="text-sm font-medium text-navy mb-2">3. Send your name and receipt</p>
       <input
         value={name}
         onChange={(e) => setName(e.target.value)}
@@ -144,6 +172,16 @@ function TransferPanel({
         placeholder="Transfer time or reference (optional)"
         className="w-full border border-navy/20 rounded px-3 py-2 text-sm mb-3"
       />
+      <label className="block text-sm text-navy/80 mb-3">
+        Upload your payment receipt (screenshot or photo)
+        <input
+          type="file"
+          accept="image/*,application/pdf"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          className="mt-1 w-full text-sm"
+        />
+        {file && <span className="block text-xs text-navy/60 mt-1">Attached: {file.name}</span>}
+      </label>
       <button
         onClick={submit}
         disabled={busy}
