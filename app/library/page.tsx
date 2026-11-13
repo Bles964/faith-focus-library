@@ -129,6 +129,11 @@ export default function LibraryPage() {
             let path: string | null = r.file_path ?? null;
             // some videos may be saved as a web link instead of an uploaded file
             let link: string | null = r.video_url ?? r.url ?? r.link ?? r.external_url ?? null;
+            // YouTube videos are saved as a YouTube id (or a full link) in "youtube_id"
+            if (typeof r.youtube_id === "string" && r.youtube_id.trim()) {
+              const yid = r.youtube_id.trim();
+              link = /^https?:\/\//i.test(yid) ? yid : `https://www.youtube.com/watch?v=${yid}`;
+            }
             // If the usual fields are empty, look for any field that holds a video file name or a web link
             if (!path && !link) {
               for (const [k, val] of Object.entries(r)) {
