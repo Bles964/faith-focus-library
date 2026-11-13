@@ -303,14 +303,34 @@ export default function LibraryPage() {
   async function playVideo(v: Video) {
     setWatchDoc(null);
     setPlaying({ title: v.title, url: null });
-    const { data, error } = await supabase.storage.from("exam-videos").createSignedUrl(v.file_path, 60 * 60);
-    if (data?.signedUrl) {
-      setPlaying({ title: v.title, url: data.signedUrl });
-      return;
+    try {
+      // Ask for a private link, but never wait more than 15 seconds for it
+      const signed: any = await Promise.race([
+        supabase.storage.from("exam-videos").createSignedUrl(v.file_path, 60 * 60),
+        new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 15000)),
+      ]);
+      if (signed?.data?.signedUrl) {
+        setPlaying({ title: v.title, url: signed.data.signedUrl });
+        return;
+      }
+      // If the storage is public, the plain link works
+      const pub = supabase.storage.from("exam-videos").getPublicUrl(v.file_path);
+      if (pub?.data?.publicUrl) {
+        setPlaying({ title: v.title, url: pub.data.publicUrl });
+        return;
+      }
+      setPlaying({
+        title: v.title,
+        url: null,
+        error:
+          signed?.error?.message ??
+          (signed?.timedOut
+            ? "The video took too long to load. Check your connection and try again."
+            : "Could not open this video."),
+      });
+    } catch (e: any) {
+      setPlaying({ title: v.title, url: null, error: e?.message ?? "Could not open this video." });
     }
-    const pub = supabase.storage.from("exam-videos").getPublicUrl(v.file_path);
-    if (pub?.data?.publicUrl) setPlaying({ title: v.title, url: pub.data.publicUrl });
-    else setPlaying({ title: v.title, url: null, error: error?.message ?? "Could not open this video." });
   }
 
   function openWatch(doc: Doc) {
@@ -934,7 +954,26 @@ export default function LibraryPage() {
           <div className="w-full max-w-xl rounded-lg bg-white p-3">
             <p className="font-serif text-base text-navy mb-2">{playing.title}</p>
             {playing.url ? (
-              <video src={playing.url} controls playsInline autoPlay className="w-full rounded bg-black" />
+              <video
+                src={playing.url}
+                controls
+                playsInline
+                autoPlay
+                preload="metadata"
+                className="w-full rounded bg-black"
+                onError={() =>
+                  setPlaying((p) =>
+                    p
+                      ? {
+                          title: p.title,
+                          url: null,
+                          error:
+                            "This video could not be played. The file may be missing from storage, or your connection dropped.",
+                        }
+                      : p
+                  )
+                }
+              />
             ) : playing.error ? (
               <p className="text-sm text-red-600">{playing.error}</p>
             ) : (
