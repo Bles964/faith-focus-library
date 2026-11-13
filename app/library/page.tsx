@@ -17,7 +17,7 @@ type Doc = {
 
 type Folder = { id: string; parent_id: string | null; name: string; sort_order: number };
 type Link = { document_id: string; folder_id: string };
-type Video = { id: string; title: string; file_path: string; document_id: string | null };
+type Video = { id: string; title: string; file_path: string | null; link: string | null; document_id: string | null };
 
 const CACHE_NAME = "library-pdfs-v1";
 
@@ -37,7 +37,7 @@ export default function LibraryPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [videos, setVideos] = useState<Video[]>([]);
   const [watchDoc, setWatchDoc] = useState<Doc | null>(null);
-  const [playing, setPlaying] = useState<{ title: string; url: string | null; error?: string } | null>(null);
+  const [playing, setPlaying] = useState<{ title: string; url: string | null; embed?: boolean; error?: string } | null>(null);
   const [linkDoc, setLinkDoc] = useState<Doc | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -113,9 +113,20 @@ export default function LibraryPage() {
       // Videos attached to files (stays empty until the video-link SQL has been run)
       const { data: videoData } = await supabase
         .from("exam_videos")
-        .select("id,title,file_path,document_id")
+        .select("*")
         .order("created_at", { ascending: false });
-      if (videoData) setVideos(videoData as Video[]);
+      if (videoData) {
+        setVideos(
+          (videoData as any[]).map((r) => ({
+            id: r.id,
+            title: r.title ?? "Video",
+            file_path: r.file_path ?? null,
+            // some videos may be saved as a web link instead of an uploaded file
+            link: r.video_url ?? r.url ?? r.link ?? r.external_url ?? null,
+            document_id: r.document_id ?? null,
+          }))
+        );
+      }
 
       setLoading(false);
 
@@ -300,33 +311,66 @@ export default function LibraryPage() {
 
   const videosFor = (docId: string) => videos.filter((v) => v.document_id === docId);
 
+  function youtubeEmbed(link: string): string | null {
+    const m =
+      link.match(/youtu\.be\/([\w-]{6,})/) ||
+      link.match(/[?&]v=([\w-]{6,})/) ||
+      link.match(/youtube\.com\/(?:embed|shorts)\/([\w-]{6,})/);
+    return m ? `https://www.youtube.com/embed/${m[1]}` : null;
+  }
+
   async function playVideo(v: Video) {
     setWatchDoc(null);
     setPlaying({ title: v.title, url: null });
     try {
-      // Ask for a private link, but never wait more than 15 seconds for it
-      const signed: any = await Promise.race([
-        supabase.storage.from("exam-videos").createSignedUrl(v.file_path, 60 * 60),
-        new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 15000)),
-      ]);
-      if (signed?.data?.signedUrl) {
-        setPlaying({ title: v.title, url: signed.data.signedUrl });
+      // 1) An uploaded file in storage
+      if (v.file_path) {
+        // Ask for a private link, but never wait more than 15 seconds for it
+        const signed: any = await Promise.race([
+          supabase.storage.from("exam-videos").createSignedUrl(v.file_path, 60 * 60),
+          new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 15000)),
+        ]);
+        if (signed?.data?.signedUrl) {
+          setPlaying({ title: v.title, url: signed.data.signedUrl });
+          return;
+        }
+        // If the storage is public, the plain link works
+        const pub = supabase.storage.from("exam-videos").getPublicUrl(v.file_path);
+        if (pub?.data?.publicUrl) {
+          setPlaying({ title: v.title, url: pub.data.publicUrl });
+          return;
+        }
+        setPlaying({
+          title: v.title,
+          url: null,
+          error:
+            signed?.error?.message ??
+            (signed?.timedOut
+              ? "The video took too long to load. Check your connection and try again."
+              : "Could not open this video."),
+        });
         return;
       }
-      // If the storage is public, the plain link works
-      const pub = supabase.storage.from("exam-videos").getPublicUrl(v.file_path);
-      if (pub?.data?.publicUrl) {
-        setPlaying({ title: v.title, url: pub.data.publicUrl });
-        return;
+
+      // 2) A web link
+      if (v.link) {
+        const yt = youtubeEmbed(v.link);
+        if (yt) {
+          setPlaying({ title: v.title, url: yt, embed: true });
+          return;
+        }
+        if (/^https?:\/\//i.test(v.link)) {
+          setPlaying({ title: v.title, url: v.link });
+          return;
+        }
       }
+
+      // 3) Nothing saved for this video
       setPlaying({
         title: v.title,
         url: null,
         error:
-          signed?.error?.message ??
-          (signed?.timedOut
-            ? "The video took too long to load. Check your connection and try again."
-            : "Could not open this video."),
+          "This video has no file or link saved, so there is nothing to play. Rebuild or re-upload it, then link it to this file again.",
       });
     } catch (e: any) {
       setPlaying({ title: v.title, url: null, error: e?.message ?? "Could not open this video." });
@@ -953,7 +997,15 @@ export default function LibraryPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <div className="w-full max-w-xl rounded-lg bg-white p-3">
             <p className="font-serif text-base text-navy mb-2">{playing.title}</p>
-            {playing.url ? (
+            {playing.url && playing.embed ? (
+              <iframe
+                src={playing.url}
+                title={playing.title}
+                allow="accelerometer; autoplay; encrypted-media; picture-in-picture"
+                allowFullScreen
+                className="w-full aspect-video rounded"
+              />
+            ) : playing.url ? (
               <video
                 src={playing.url}
                 controls
