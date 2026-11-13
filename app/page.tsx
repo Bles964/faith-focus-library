@@ -1,71 +1,177 @@
 "use client";
+// Save as: app/admin/payments/page.tsx   (replace the old one; only you, the admin, can use it)
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { createClient } from "@/lib/supabaseClient";
-import { BUSINESS_NAME } from "@/lib/business";
+import { PLANS } from "@/lib/plans";
 
-const FEATURES = [
-  {
-    title: "Study guides",
-    text: "Simplified notes, striking points, mnemonics, clinical scenarios and MCQs, written for medical students.",
-  },
-  {
-    title: "Read and listen",
-    text: "Read each guide in the library, or tap Listen and follow along while it reads aloud and turns the pages.",
-  },
-  {
-    title: "Quizzes",
-    text: "Test yourself on the multiple-choice questions inside each guide and see your score straight away.",
-  },
-];
+type Req = {
+  id: string;
+  email: string | null;
+  plan_id: string;
+  days: number;
+  amount_ngn: number;
+  payer_name: string;
+  note: string | null;
+  receipt_path: string | null;
+  created_at: string;
+};
+type Payment = { id: string; email: string | null; reference: string; amount_kobo: number | null; days: number | null; paid_at: string };
 
-export default function HomePage() {
-  const [signedIn, setSignedIn] = useState(false);
+export default function PaymentsPage() {
+  const supabase = createClient();
+  const [pending, setPending] = useState<Req[]>([]);
+  const [rows, setRows] = useState<Payment[]>([]);
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [msg, setMsg] = useState("");
+  const [view, setView] = useState<{ url: string; isPdf: boolean } | null>(null);
+
+  async function load() {
+    const { data: r } = await supabase
+      .from("payment_requests")
+      .select("id,email,plan_id,days,amount_ngn,payer_name,note,receipt_path,created_at")
+      .eq("status", "pending")
+      .order("created_at", { ascending: true });
+    setPending((r as Req[]) ?? []);
+    const { data } = await supabase
+      .from("payments")
+      .select("id,email,reference,amount_kobo,days,paid_at")
+      .order("paid_at", { ascending: false })
+      .limit(200);
+    setRows((data as Payment[]) ?? []);
+  }
 
   useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getUser().then(({ data }) => setSignedIn(!!data?.user));
+    async function init() {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return setIsAdmin(false);
+      const { data: p } = await supabase.from("profiles").select("is_admin").eq("id", user.id).single();
+      if (!p?.is_admin) return setIsAdmin(false);
+      setIsAdmin(true);
+      await load();
+    }
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function showReceipt(r: Req) {
+    if (!r.receipt_path) return;
+    setMsg("");
+    const { data, error } = await supabase.storage.from("payment-receipts").createSignedUrl(r.receipt_path, 600);
+    if (error || !data?.signedUrl) return setMsg(error?.message || "Could not open the receipt.");
+    setView({ url: data.signedUrl, isPdf: /\.pdf$/i.test(r.receipt_path) });
+  }
+
+  async function decide(r: Req, approve: boolean) {
+    const text = approve
+      ? `Approve ${r.email}? Only do this after you see ₦${r.amount_ngn.toLocaleString("en-NG")} in your bank app.`
+      : `Reject the notice from ${r.email}?`;
+    if (!window.confirm(text)) return;
+    setBusyId(r.id);
+    setMsg("");
+    const { error } = await supabase.rpc(approve ? "approve_payment_request" : "reject_payment_request", {
+      p_id: r.id,
+    });
+    setBusyId(null);
+    if (error) return setMsg(error.message || "Something went wrong.");
+    await load();
+  }
+
+  if (isAdmin === null) return <p className="text-sm text-navy/50">Loading…</p>;
+  if (!isAdmin) return <p className="text-navy/70">This page is for the admin only.</p>;
+
+  const total = rows.reduce((n, r) => n + (r.amount_kobo ?? 0), 0) / 100;
+
   return (
-    <div>
-      <section className="text-center py-10">
-        <p className="text-xs uppercase tracking-widest text-gold font-medium mb-3">{BUSINESS_NAME}</p>
-        <h1 className="font-serif text-3xl sm:text-4xl text-navy leading-tight mb-4">
-          Exam preparation for medical students
-        </h1>
-        <p className="text-navy/70 max-w-xl mx-auto mb-6">
-          Clinical study guides, read-aloud and quizzes for MBBS, USMLE and OSCE preparation, all in one library.
-        </p>
-        <div className="flex flex-wrap justify-center gap-3">
-          {signedIn ? (
-            <Link href="/library" className="px-5 py-2.5 rounded bg-navy text-paper text-sm">
-              Go to the library
-            </Link>
-          ) : (
-            <Link href="/login" className="px-5 py-2.5 rounded bg-navy text-paper text-sm">
-              Sign in or create an account
-            </Link>
-          )}
-          <Link href="/about" className="px-5 py-2.5 rounded border border-navy/30 text-navy/80 text-sm">
-            About us
-          </Link>
+    <div className="max-w-xl mx-auto">
+      <h1 className="font-serif text-2xl text-navy mb-4">Payments</h1>
+
+      <h2 className="font-serif text-lg text-navy mb-2">Waiting for you ({pending.length})</h2>
+      {msg && <p className="text-sm text-red-600 mb-2">{msg}</p>}
+      {pending.length === 0 ? (
+        <p className="text-sm text-navy/50 mb-6">Nothing waiting.</p>
+      ) : (
+        <div className="space-y-3 mb-8">
+          {pending.map((r) => (
+            <div key={r.id} className="border border-gold/60 bg-gold/10 rounded-lg p-4 text-sm">
+              <p className="text-navy font-medium break-all">{r.email}</p>
+              <p className="text-navy mt-1">
+                ₦{r.amount_ngn.toLocaleString("en-NG")} for {PLANS.find((p) => p.id === r.plan_id)?.label ?? `${r.days} days`}
+              </p>
+              <p className="text-navy/70 mt-1">Paid from: {r.payer_name}</p>
+              {r.note && <p className="text-navy/70">Note: {r.note}</p>}
+              {r.receipt_path ? (
+                <button onClick={() => showReceipt(r)} className="mt-2 text-navy underline text-sm">
+                  View receipt
+                </button>
+              ) : (
+                <p className="mt-2 text-xs text-red-700">No receipt attached</p>
+              )}
+              <p className="text-xs text-navy/50 mt-1">{new Date(r.created_at).toLocaleString("en-NG")}</p>
+              <div className="flex gap-2 mt-3">
+                <button
+                  onClick={() => decide(r, true)}
+                  disabled={busyId === r.id}
+                  className="flex-1 rounded bg-navy text-paper py-2 disabled:opacity-50"
+                >
+                  {busyId === r.id ? "Working…" : "Approve"}
+                </button>
+                <button
+                  onClick={() => decide(r, false)}
+                  disabled={busyId === r.id}
+                  className="rounded border border-navy/30 text-navy/70 px-4 py-2 disabled:opacity-50"
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
-      </section>
+      )}
 
-      <section className="grid sm:grid-cols-3 gap-4 mb-10">
-        {FEATURES.map((f) => (
-          <div key={f.title} className="border border-navy/15 rounded-lg bg-white p-5">
-            <h2 className="font-serif text-lg text-navy mb-2">{f.title}</h2>
-            <p className="text-sm text-navy/70">{f.text}</p>
+      <h2 className="font-serif text-lg text-navy mb-1">Confirmed payments</h2>
+      <p className="text-sm text-navy/60 mb-3">
+        {rows.length} {rows.length === 1 ? "payment" : "payments"} · ₦{total.toLocaleString("en-NG")} in total
+      </p>
+      {rows.length === 0 ? (
+        <p className="text-sm text-navy/50">No confirmed payments yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((r) => (
+            <div key={r.id} className="border border-navy/15 rounded-lg bg-white p-3 text-sm">
+              <div className="flex justify-between gap-3">
+                <span className="text-navy font-medium break-all">{r.email ?? "Unknown"}</span>
+                <span className="text-navy shrink-0">₦{((r.amount_kobo ?? 0) / 100).toLocaleString("en-NG")}</span>
+              </div>
+              <p className="text-xs text-navy/60 mt-1">
+                {new Date(r.paid_at).toLocaleString("en-NG")} · {r.days} days of access
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+      {view && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-lg bg-white p-3">
+            {view.isPdf ? (
+              <a href={view.url} target="_blank" rel="noreferrer" className="text-navy underline text-sm">
+                Open the receipt (PDF)
+              </a>
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={view.url} alt="Payment receipt" className="w-full rounded" />
+            )}
+            <button
+              onClick={() => setView(null)}
+              className="mt-3 w-full rounded border border-navy/30 px-4 py-2 text-sm text-navy"
+            >
+              Close
+            </button>
           </div>
-        ))}
-      </section>
-
-      <section className="text-center mb-6">
-        <p className="text-xs uppercase tracking-widest text-navy/50 mb-2">Built for</p>
-        <p className="font-serif text-xl text-navy">MBBS · USMLE · OSCE</p>
-      </section>
+        </div>
+      )}
     </div>
   );
 }
