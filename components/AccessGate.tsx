@@ -16,6 +16,50 @@ type Supa = ReturnType<typeof createClient>;
 
 const naira = (n: number) => "₦" + n.toLocaleString("en-NG");
 
+
+// Shrinks a phone photo to about 1400px wide so it uploads quickly (PDFs are left alone)
+async function shrinkImage(f: File): Promise<File> {
+  if (!f.type.startsWith("image/")) return f;
+  try {
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error("image"));
+      img.src = url;
+    });
+    const max = 1400;
+    const scale = Math.min(1, max / Math.max(img.width, img.height));
+    const w = Math.round(img.width * scale);
+    const h = Math.round(img.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      URL.revokeObjectURL(url);
+      return f;
+    }
+    ctx.drawImage(img, 0, 0, w, h);
+    URL.revokeObjectURL(url);
+    const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.75));
+    if (!blob || blob.size >= f.size) return f;
+    return new File([blob], f.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
+  } catch {
+    return f;
+  }
+}
+
+// Turns technical errors into something a student can act on
+function friendlyError(e: any, fallback: string): string {
+  const m = String(e?.message || "");
+  if (/failed to fetch|network|load failed|timeout|timed out/i.test(m)) {
+    return "Your internet connection dropped, so nothing was sent. Check your connection (Wi-Fi often works better) and tap the button again.";
+  }
+  if (/bucket not found/i.test(m)) return "Receipt uploads are not switched on yet. Please contact us.";
+  return fallback + (m ? " " + m : "");
+}
+
 /* ---------- Bank transfer: choose plan, see details, tell us you paid ---------- */
 function TransferPanel({
   supabase,
@@ -61,66 +105,109 @@ function TransferPanel({
       setMsg("The receipt must be a photo, a screenshot or a PDF.");
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
-      setMsg("That file is too big. Please use a receipt under 5 MB.");
-      return;
-    }
     setBusy(true);
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      setBusy(false);
-      setMsg("Please sign in again.");
-      return;
-    }
-
-    // Upload the receipt first, into the student's own private folder
-    const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-60);
-    const receiptPath = `${user.id}/${Date.now()}-${safeName}`;
-    const { error: upErr } = await supabase.storage
-      .from("payment-receipts")
-      .upload(receiptPath, file, { contentType: file.type, upsert: false });
-    if (upErr) {
-      setBusy(false);
-      setMsg("Could not upload your receipt. " + (upErr.message || "Please try again."));
-      return;
-    }
-
-    const { error } = await supabase.from("payment_requests").insert({
-      receipt_path: receiptPath,
-      user_id: user.id,
-      email: user.email,
-      plan_id: plan.id,
-      days: plan.days,
-      amount_ngn: plan.amountNgn,
-      payer_name: name.trim().slice(0, 80),
-      note: note.trim() ? note.trim().slice(0, 200) : null,
-    });
-    if (error) {
-      await supabase.storage.from("payment-receipts").remove([receiptPath]);
-      setBusy(false);
-      setMsg(
-        error.code === "23505"
-          ? "You already have a payment waiting to be confirmed."
-          : error.message || "Could not send your notice."
-      );
-      return;
-    }
-    // Tell the admin by email (does nothing if email is not set up)
     try {
-      const { data: sess } = await supabase.auth.getSession();
-      fetch("/api/notify-payment", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${sess.session?.access_token ?? ""}`,
-        },
-        body: JSON.stringify({ planId: plan.id, payerName: name.trim() }),
-      }).catch(() => {});
-    } catch {}
-    setBusy(false);
-    onSubmitted();
+      // Phone photos are big. Shrink them first so they send quickly even on weak data.
+      const toSend = await shrinkImage(file);
+      if (toSend.size > 8 * 1024 * 1024) {
+        setMsg("That file is too big. Please use a smaller screenshot or a photo under 8 MB.");
+        return;
+      }
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        setMsg("Please sign in again.");
+        return;
+      }
+
+      // Upload the receipt first, into the student's own private folder. Try up to 3 times.
+      const safeName = toSend.name.replace(/[^A-Za-z0-9._-]/g, "_").slice(-60);
+      const receiptPath = `${user.id}/${Date.now()}-${safeName}`;
+      let upErr: any = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const { error } = await supabase.storage
+            .from("payment-receipts")
+            .upload(receiptPath, toSend, { contentType: toSend.type, upsert: false });
+          upErr = error;
+          // "already exists" means an earlier try actually got through
+          if (!error || /already exists|duplicate/i.test(error.message || "")) {
+            upErr = null;
+            break;
+          }
+        } catch (e: any) {
+          upErr = e;
+        }
+        if (attempt < 3) {
+          setMsg(`Connection is slow. Trying again (${attempt + 1} of 3)...`);
+          await new Promise((r) => setTimeout(r, 1500 * attempt));
+        }
+      }
+      if (upErr) {
+        setMsg(friendlyError(upErr, "Could not upload your receipt."));
+        return;
+      }
+      setMsg("");
+
+      let insertErr: any = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const { error } = await supabase.from("payment_requests").insert({
+            receipt_path: receiptPath,
+            user_id: user.id,
+            email: user.email,
+            plan_id: plan.id,
+            days: plan.days,
+            amount_ngn: plan.amountNgn,
+            payer_name: name.trim().slice(0, 80),
+            note: note.trim() ? note.trim().slice(0, 200) : null,
+          });
+          insertErr = error;
+          // "duplicate" means an earlier try already saved this notice
+          if (!error || error.code === "23505") {
+            insertErr = error && error.code === "23505" ? error : null;
+            break;
+          }
+          if (error.message && !/failed to fetch|network|load failed/i.test(error.message)) break;
+        } catch (e: any) {
+          insertErr = e;
+        }
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 1500 * attempt));
+      }
+      if (insertErr) {
+        if (insertErr.code !== "23505") {
+          try {
+            await supabase.storage.from("payment-receipts").remove([receiptPath]);
+          } catch {}
+        }
+        setMsg(
+          insertErr.code === "23505"
+            ? "You already have a payment waiting to be confirmed."
+            : friendlyError(insertErr, "Could not send your notice.")
+        );
+        return;
+      }
+
+      // Tell the admin by email (does nothing if email is not set up)
+      try {
+        const { data: sess } = await supabase.auth.getSession();
+        fetch("/api/notify-payment", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+          },
+          body: JSON.stringify({ planId: plan.id, payerName: name.trim() }),
+        }).catch(() => {});
+      } catch {}
+      onSubmitted();
+    } catch (e: any) {
+      setMsg(friendlyError(e, "Something went wrong."));
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
