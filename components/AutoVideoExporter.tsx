@@ -13,6 +13,10 @@ type Props<T extends BaseStage> = {
   fileName: string;
   voice?: string;
   saveTitle?: string;
+  // For a long video made of several shorter ones: reuse the voices recorded for those shorter videos
+  ownKeys?: { f: string; i: number }[];
+  // Hide the "record my own voice" panel (used when the voices come from ownKeys)
+  hideVoice?: boolean;
 };
 
 const ENGINE_SERVERS = [
@@ -123,6 +127,8 @@ export default function AutoVideoExporter<T extends BaseStage>({
   fileName,
   voice,
   saveTitle,
+  ownKeys,
+  hideVoice,
 }: Props<T>) {
   const [status, setStatus] = useState("");
   const [progress, setProgress] = useState(0);
@@ -366,7 +372,8 @@ export default function AutoVideoExporter<T extends BaseStage>({
   }
 
   async function getNarration(stage: T, idx: number): Promise<Blob> {
-    const own = await readOwn(fileName, idx);
+    const ok = ownKeys?.[idx];
+    const own = await readOwn(ok ? ok.f : fileName, ok ? ok.i : idx);
     if (own) {
       setStatus(`Using your voice: ${stage.label}`);
       return own;
@@ -473,6 +480,10 @@ export default function AutoVideoExporter<T extends BaseStage>({
           `clip${idx}.mp4`,
         ]);
         clips.push(`clip${idx}.mp4`);
+        try {
+          await ffmpeg.deleteFile(pngName);
+          await ffmpeg.deleteFile(audioName);
+        } catch {}
         setProgress(Math.round(((idx + 1) / stages.length) * 90));
       }
 
@@ -671,6 +682,8 @@ export default function AutoVideoExporter<T extends BaseStage>({
         </label>
       )}
 
+      {!hideVoice && (
+        <>
       <button
         onClick={() => setShowVoice((v) => !v)}
         style={{
@@ -767,6 +780,13 @@ export default function AutoVideoExporter<T extends BaseStage>({
           })}
           {voiceMsg && <p style={{ color: "#9AA6B8", fontSize: ".85rem", marginTop: 8 }}>{voiceMsg}</p>}
         </div>
+      )}
+        </>
+      )}
+      {hideVoice && (
+        <p style={{ color: "#9AA6B8", fontSize: ".8rem", marginTop: 12 }}>
+          Uses the voices you already recorded in the session videos. Any scene without a recording uses the computer voice.
+        </p>
       )}
       {status && (
         <p style={{ color: "#9AA6B8", fontSize: ".85rem", marginTop: 10 }}>
