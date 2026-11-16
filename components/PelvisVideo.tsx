@@ -3,6 +3,7 @@ import AutoVideoExporter from "./AutoVideoExporter";
 import PelvisStageSvg from "./PelvisStageSvg";
 import type { PelvisStage } from "./PelvisStageSvg";
 import AcuteScrotumVideo from "./AcuteScrotumVideo";
+import UpperLimbVideos from "./UpperLimbVideos";
 
 const STAGES: PelvisStage[] = [
   {
@@ -103,6 +104,8 @@ export default function PelvisVideo() {
       <div style={{ maxWidth: 480, margin: "40px auto 0", paddingTop: 32, borderTop: "1px solid #2A3E5C" }}>
         <AcuteScrotumVideo />
       </div>
+
+      <UpperLimbVideos />
     </>
   );
 }
