@@ -7,7 +7,7 @@ export const PAYMENT_MODE: "transfer" | "paystack" = "transfer";
 // CHANGE THESE to your own bank details. Students will see them.
 export const BANK = {
   bankName: "OPAY",
-  accountNumber: "8105589718",
+  accountNumber: "8105598718",
   accountName: "OPARA BLESSSING CHINOCHIRI",
 };
 
